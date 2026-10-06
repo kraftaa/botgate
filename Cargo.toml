@@ -25,3 +25,8 @@ url = "2.5"
 
 [dev-dependencies]
 proptest = "1"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

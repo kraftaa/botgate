@@ -29,10 +29,35 @@ This repository implements a focused v0.1:
 
 It does not fetch untrusted key-directory URLs or send active mutations. Those operations require an SSRF-safe resolver and an explicit authentication oracle; pretending that response status alone is an oracle would produce misleading results.
 
-## Build
+## Install
+
+You do not need Rust or Cargo to use Botgate. Install a prebuilt binary for
+macOS or Linux:
 
 ```sh
-cargo build --release
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/kraftaa/botgate/releases/latest/download/botgate-installer.sh | sh
+```
+
+On Windows, run this in PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/kraftaa/botgate/releases/latest/download/botgate-installer.ps1 | iex"
+```
+
+The installer selects the correct binary for your system and adds it to your
+PATH. Standalone archives and SHA-256 checksums are also available on the
+[Releases page](https://github.com/kraftaa/botgate/releases).
+
+The download links become active when the first public release is published.
+Until then, authenticated repository collaborators can download private release
+assets with the GitHub CLI.
+
+Confirm the installation:
+
+```sh
+botgate --version
+botgate --help
 ```
 
 ## End-to-end example
@@ -40,7 +65,7 @@ cargo build --release
 Generate a test key and policy:
 
 ```sh
-target/release/botgate init
+botgate init
 ```
 
 This creates:
@@ -62,7 +87,7 @@ On Unix, the private key is created atomically with mode `0600`. On Windows it i
 Sign the example request using the current IETF form:
 
 ```sh
-target/release/botgate sign examples/request.http \
+botgate sign examples/request.http \
   --agent https://agent.example \
   --components @authority,@method,@path,@query \
   --output signed-request.http
@@ -71,14 +96,14 @@ target/release/botgate sign examples/request.http \
 Inspect declared coverage without loading a key:
 
 ```sh
-target/release/botgate inspect signed-request.http \
+botgate inspect signed-request.http \
   --config examples/strict-policy.toml
 ```
 
 Verify cryptographically using a local JWKS:
 
 ```sh
-target/release/botgate verify signed-request.http \
+botgate verify signed-request.http \
   --jwks .botgate/directory.json \
   --config examples/strict-policy.toml
 ```
@@ -86,7 +111,7 @@ target/release/botgate verify signed-request.http \
 Show the offline mutation matrix:
 
 ```sh
-target/release/botgate test signed-request.http \
+botgate test signed-request.http \
   --jwks .botgate/directory.json \
   --config examples/strict-policy.toml
 ```
@@ -106,14 +131,14 @@ Signature-Input: sig1=("@authority" "signature-agent";key="sig1");...
 Cloudflare currently documents the older bare-string form. Generate and analyze that form explicitly:
 
 ```sh
-target/release/botgate sign examples/request.http \
+botgate sign examples/request.http \
   --agent https://agent.example \
   --components @authority \
   --legacy-agent \
   --output cloudflare-request.http
 
-target/release/botgate inspect cloudflare-request.http --profile cloudflare
-target/release/botgate inspect cloudflare-request.http --profile ietf-draft-00
+botgate inspect cloudflare-request.http --profile cloudflare
+botgate inspect cloudflare-request.http --profile ietf-draft-00
 ```
 
 The second command reports why the same request is legacy rather than conformant for a new IETF-draft sender.
@@ -181,7 +206,11 @@ Botgate does not impersonate commercial agents, bypass bot protection, solve CAP
 
 ## Development
 
+Rust and Cargo are required only when building Botgate from source or
+contributing to the project:
+
 ```sh
+cargo build --release
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
