@@ -1,0 +1,4 @@
+GET /orders/123?view=summary HTTP/1.1
+Host: api.example.test
+Accept: application/json
+

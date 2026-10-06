@@ -1,0 +1,29 @@
+# cargo-deny policy: known vulnerabilities, license allow-list, and crate sources.
+
+[graph]
+all-features = true
+
+[advisories]
+# Unmaintained or yanked crates fail the check alongside vulnerabilities.
+unmaintained = "all"
+yanked = "deny"
+
+[licenses]
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Unlicense",
+]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

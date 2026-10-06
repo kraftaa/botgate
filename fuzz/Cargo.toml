@@ -1,0 +1,40 @@
+[package]
+name = "botgate-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+url = "2.5"
+
+[dependencies.botgate]
+path = ".."
+
+# Keep the fuzz crate out of the main package's workspace.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "parse_request"
+path = "fuzz_targets/parse_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parse_signatures"
+path = "fuzz_targets/parse_signatures.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "signature_base"
+path = "fuzz_targets/signature_base.rs"
+test = false
+doc = false
+bench = false

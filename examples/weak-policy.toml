@@ -1,0 +1,10 @@
+[policy]
+require_authority = true
+require_method = false
+require_path = false
+query = "ignore"
+body = "ignore"
+max_age_seconds = 300
+max_lifetime_seconds = 300
+allowed_future_skew_seconds = 30
+require_nonce = false
