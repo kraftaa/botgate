@@ -19,9 +19,10 @@ credentials.
 
 ## Homebrew tap
 
-Create a fine-grained GitHub token with contents write access limited to
-`kraftaa/homebrew-tap`, then store it in this repository as the Actions secret
-`HOMEBREW_TAP_TOKEN`.
+The release workflow generates `botgate.rb` as a release artifact. Download and
+test that formula, then commit it to `kraftaa/homebrew-tap/Formula/botgate.rb`
+using the maintainer's normal GitHub credentials. No cross-repository Actions
+token is required.
 
 ## Publish
 
@@ -29,8 +30,9 @@ Create a fine-grained GitHub token with contents write access limited to
 2. Enable the `CI`, `Release`, and `PyPI` GitHub Actions workflows.
 3. Confirm the version in `Cargo.toml` and `Cargo.lock`.
 4. Push an annotated tag matching that version, for example `v0.1.0`.
-5. Confirm the GitHub release, Homebrew formula, and PyPI wheels were published.
+5. Confirm the GitHub release and PyPI wheels were published.
+6. Download, test, and commit `botgate.rb` to `kraftaa/homebrew-tap`.
 
-The release workflow publishes native archives and the Homebrew formula. The
-PyPI workflow publishes native wheels for macOS (Apple Silicon and Intel), Linux
-(ARM64 and x64), and Windows x64.
+The release workflow publishes native archives and generates the Homebrew
+formula. The PyPI workflow publishes native wheels for macOS (Apple Silicon and
+Intel), Linux (ARM64 and x64), and Windows x64.

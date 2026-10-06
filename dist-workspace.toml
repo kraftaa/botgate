@@ -17,6 +17,5 @@ install-path = "CARGO_HOME"
 hosting = "github"
 # Publish the generated formula to the conventional Homebrew tap.
 tap = "kraftaa/homebrew-tap"
-publish-jobs = ["homebrew"]
 # Whether to install an updater program
 install-updater = false
