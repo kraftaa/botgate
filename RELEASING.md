@@ -13,8 +13,9 @@ Create a pending trusted publisher for the `botgate` project on PyPI with:
 - Workflow filename: `pypi.yml`
 - Environment name: `pypi`
 
-Create a GitHub environment named `pypi` in this repository. No long-lived PyPI
-API token is required; the workflow uses short-lived OIDC credentials.
+The GitHub environment named `pypi` is already configured in this repository.
+No long-lived PyPI API token is required; the workflow uses short-lived OIDC
+credentials.
 
 ## Homebrew tap
 
