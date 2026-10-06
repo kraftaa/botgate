@@ -110,10 +110,10 @@ pub fn verify(
     jwks: &Jwks,
     context: Option<&Url>,
 ) -> Result<String> {
-    if let Some(alg) = input.param("alg")
-        && alg.as_str() != Some("ed25519")
-    {
-        bail!("unsupported alg parameter; Ed25519 verification requires alg=\"ed25519\"");
+    if let Some(alg) = input.param("alg") {
+        if alg.as_str() != Some("ed25519") {
+            bail!("unsupported alg parameter; Ed25519 verification requires alg=\"ed25519\"");
+        }
     }
     let keyid = input
         .param("keyid")

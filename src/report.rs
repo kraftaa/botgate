@@ -422,16 +422,17 @@ fn profile_findings(
     if input.param("tag").and_then(Value::as_str) != Some("web-bot-auth") {
         findings.push(error("BG-C104", "conformance", "tag must be web-bot-auth"));
     }
-    if let Some(keyid) = input.param("keyid").and_then(Value::as_str)
-        && URL_SAFE_NO_PAD
+    if let Some(keyid) = input.param("keyid").and_then(Value::as_str) {
+        if URL_SAFE_NO_PAD
             .decode(keyid)
             .map_or(true, |bytes| bytes.len() != 32)
-    {
-        findings.push(error(
-            "BG-C113",
-            "conformance",
-            "keyid must be a base64url-encoded SHA-256 JWK thumbprint",
-        ));
+        {
+            findings.push(error(
+                "BG-C113",
+                "conformance",
+                "keyid must be a base64url-encoded SHA-256 JWK thumbprint",
+            ));
+        }
     }
     let agent = request.header("signature-agent");
     match (profile, agent.as_deref()) {
@@ -565,23 +566,23 @@ fn time_findings(input: &SignatureInput, p: &Policy, findings: &mut Vec<Finding>
             "expires timestamp precedes created timestamp",
         ));
     }
-    if let (Some(max), Some(c)) = (p.max_age_seconds, created)
-        && now.saturating_sub(c) > max
-    {
-        findings.push(error(
-            "BG-P112",
-            "policy",
-            format!("signature age exceeds {max}s"),
-        ));
+    if let (Some(max), Some(c)) = (p.max_age_seconds, created) {
+        if now.saturating_sub(c) > max {
+            findings.push(error(
+                "BG-P112",
+                "policy",
+                format!("signature age exceeds {max}s"),
+            ));
+        }
     }
-    if let (Some(max), Some(c), Some(e)) = (p.max_lifetime_seconds, created, expires)
-        && e.checked_sub(c).is_some_and(|lifetime| lifetime > max)
-    {
-        findings.push(error(
-            "BG-P113",
-            "policy",
-            format!("signature lifetime exceeds {max}s"),
-        ));
+    if let (Some(max), Some(c), Some(e)) = (p.max_lifetime_seconds, created, expires) {
+        if e.checked_sub(c).is_some_and(|lifetime| lifetime > max) {
+            findings.push(error(
+                "BG-P113",
+                "policy",
+                format!("signature lifetime exceeds {max}s"),
+            ));
+        }
     }
     if p.require_nonce && input.param("nonce").is_none() {
         findings.push(error("BG-P114", "policy", "policy requires a nonce"));

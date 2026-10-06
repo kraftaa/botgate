@@ -59,10 +59,10 @@ impl Request {
         {
             bail!("invalid HTTP request target");
         }
-        if let Ok(url) = Url::parse(&target)
-            && (!url.username().is_empty() || url.password().is_some() || url.fragment().is_some())
-        {
-            bail!("absolute request target contains forbidden URI components");
+        if let Ok(url) = Url::parse(&target) {
+            if !url.username().is_empty() || url.password().is_some() || url.fragment().is_some() {
+                bail!("absolute request target contains forbidden URI components");
+            }
         }
         let mut headers = Vec::new();
         for raw in lines {
