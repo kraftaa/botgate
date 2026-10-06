@@ -63,10 +63,6 @@ compile Botgate or install a Rust toolchain. Standalone archives, a Windows
 installer, a shell installer, and SHA-256 checksums are also available on the
 [Releases page](https://github.com/kraftaa/botgate/releases) as fallbacks.
 
-The download links become active when the first public release is published.
-Until then, authenticated repository collaborators can download private release
-assets with the GitHub CLI.
-
 Confirm the installation:
 
 ```sh
