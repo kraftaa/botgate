@@ -31,23 +31,37 @@ It does not fetch untrusted key-directory URLs or send active mutations. Those o
 
 ## Install
 
-You do not need Rust or Cargo to use Botgate. Install a prebuilt binary for
-macOS or Linux:
+You do not need Rust or Cargo to use Botgate.
+
+On macOS or Linux, install with Homebrew:
 
 ```sh
-curl --proto '=https' --tlsv1.2 -LsSf \
-  https://github.com/kraftaa/botgate/releases/latest/download/botgate-installer.sh | sh
+brew install kraftaa/tap/botgate
 ```
 
-On Windows, run this in PowerShell:
+If you already use Python tooling, install the same native Botgate binary on
+macOS, Linux, or Windows with `pipx`:
 
-```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://github.com/kraftaa/botgate/releases/latest/download/botgate-installer.ps1 | iex"
+```sh
+pipx install botgate
 ```
 
-The installer selects the correct binary for your system and adds it to your
-PATH. Standalone archives and SHA-256 checksums are also available on the
-[Releases page](https://github.com/kraftaa/botgate/releases).
+Or with `uv`:
+
+```sh
+uv tool install botgate
+```
+
+Inside an existing Python virtual environment, ordinary pip works too:
+
+```sh
+python -m pip install botgate
+```
+
+These package-manager installs use prebuilt native binaries; they do not
+compile Botgate or install a Rust toolchain. Standalone archives, a Windows
+installer, a shell installer, and SHA-256 checksums are also available on the
+[Releases page](https://github.com/kraftaa/botgate/releases) as fallbacks.
 
 The download links become active when the first public release is published.
 Until then, authenticated repository collaborators can download private release
@@ -229,6 +243,7 @@ cargo +nightly fuzz run signature_base
 ```
 
 See [SECURITY.md](SECURITY.md) for the trust model and how to report vulnerabilities.
+Maintainer release setup is documented in [RELEASING.md](RELEASING.md).
 
 The protocol is still an Internet-Draft. Profile-specific behavior is kept separate in the report engine, and `botgate protocol` identifies the implemented draft.
 

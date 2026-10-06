@@ -6,6 +6,7 @@ description = "Evidence-first Web Bot Auth conformance and coverage analyzer"
 license = "MIT"
 rust-version = "1.86"
 repository = "https://github.com/kraftaa/botgate"
+homepage = "https://github.com/kraftaa/botgate"
 readme = "README.md"
 keywords = ["web-bot-auth", "http-signatures", "rfc9421", "ed25519", "bots"]
 categories = ["command-line-utilities", "cryptography", "authentication"]

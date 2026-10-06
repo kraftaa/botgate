@@ -1,0 +1,29 @@
+[build-system]
+requires = ["maturin>=1.11,<2"]
+build-backend = "maturin"
+
+[project]
+name = "botgate"
+dynamic = ["version"]
+description = "Evidence-first Web Bot Auth conformance and coverage analyzer"
+readme = "README.md"
+requires-python = ">=3.8"
+license = "MIT"
+keywords = ["web-bot-auth", "http-signatures", "rfc9421", "security"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Rust",
+  "Topic :: Security",
+  "Topic :: Internet :: WWW/HTTP",
+]
+
+[project.urls]
+Homepage = "https://github.com/kraftaa/botgate"
+Repository = "https://github.com/kraftaa/botgate"
+Issues = "https://github.com/kraftaa/botgate/issues"
+
+[tool.maturin]
+bindings = "bin"
+strip = true

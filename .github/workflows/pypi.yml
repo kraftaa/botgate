@@ -1,0 +1,108 @@
+name: PyPI
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'
+
+permissions:
+  contents: read
+
+jobs:
+  verify-version:
+    name: Verify release version
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Match the tag to Cargo.toml
+        shell: bash
+        run: |
+          package_version=$(cargo metadata --no-deps --format-version 1 | jq --raw-output '.packages[] | select(.name == "botgate") | .version')
+          test "v${package_version}" = "${GITHUB_REF_NAME}"
+
+  linux:
+    name: Linux wheel (${{ matrix.target }})
+    needs: verify-version
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - aarch64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: PyO3/maturin-action@v1
+        with:
+          maturin-version: v1.11.5
+          target: ${{ matrix.target }}
+          manylinux: '2_17'
+          args: --release --locked --compatibility pypi --out dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheel-linux-${{ matrix.target }}
+          path: dist/*.whl
+
+  macos:
+    name: macOS wheel (${{ matrix.target }})
+    needs: verify-version
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            target: aarch64-apple-darwin
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: PyO3/maturin-action@v1
+        with:
+          maturin-version: v1.11.5
+          target: ${{ matrix.target }}
+          args: --release --locked --compatibility pypi --out dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheel-macos-${{ matrix.target }}
+          path: dist/*.whl
+
+  windows:
+    name: Windows wheel
+    needs: verify-version
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: PyO3/maturin-action@v1
+        with:
+          maturin-version: v1.11.5
+          target: x86_64-pc-windows-msvc
+          args: --release --locked --compatibility pypi --out dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheel-windows-x86_64
+          path: dist/*.whl
+
+  publish:
+    name: Publish wheels to PyPI
+    needs: [linux, macos, windows]
+    runs-on: ubuntu-22.04
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: wheel-*
+          path: dist
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@release/v1
