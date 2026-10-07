@@ -160,6 +160,11 @@ fn verify_json_reports_valid_signature_with_key_only_identity() {
         report["protocol"],
         "draft-ietf-webbotauth-httpsig-protocol-00"
     );
+    assert_eq!(report["profile_snapshot"], "2026-09-01");
+    assert_eq!(
+        report["profile_source"],
+        "https://datatracker.ietf.org/doc/draft-ietf-webbotauth-httpsig-protocol/"
+    );
     assert_eq!(report["request"]["method"], "GET");
     let signature = &report["signatures"][0];
     assert_eq!(signature["label"], "sig1");
@@ -184,6 +189,29 @@ fn verify_json_reports_valid_signature_with_key_only_identity() {
             .iter()
             .all(|f| f["level"] != "error")
     );
+}
+
+#[test]
+fn dated_cloudflare_profile_and_compatibility_alias_select_the_same_snapshot() {
+    let temp = tempfile::tempdir().unwrap();
+    let (signed, _) = sign(temp.path(), &example("request.http"), "@authority");
+
+    for profile in ["cloudflare-2026-10", "cloudflare"] {
+        let output = botgate()
+            .arg("inspect")
+            .arg(&signed)
+            .args(["--profile", profile, "--format", "json"])
+            .output()
+            .unwrap();
+        assert_ne!(output.status.code(), Some(2), "{output:?}");
+        let report = json(&output);
+        assert_eq!(report["protocol"], "cloudflare-2026-10");
+        assert_eq!(report["profile_snapshot"], "2026-10-07");
+        assert_eq!(
+            report["profile_source"],
+            "https://developers.cloudflare.com/bots/reference/bot-verification/web-bot-auth/"
+        );
+    }
 }
 
 #[test]

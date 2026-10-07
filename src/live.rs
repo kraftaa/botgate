@@ -66,7 +66,7 @@ impl LiveReport {
     pub fn text(&self) -> String {
         let mut output = format!("Botgate live test\n\nTarget: {}\n\n", self.target);
         output.push_str(
-            "Case                     Crypto expected  Authentication             Access                     HTTP  Result\n",
+            "Case                     Expected validity Authentication             Access                     HTTP  Result\n",
         );
         for case in &self.cases {
             let authentication = format!(
@@ -82,7 +82,7 @@ impl LiveReport {
                 _ => "not configured".into(),
             };
             output.push_str(&format!(
-                "{:<24} {:<16} {:<26} {:<26} {:<5} {}\n",
+                "{:<24} {:<20} {:<26} {:<26} {:<5} {}\n",
                 case.name,
                 case.expected_crypto,
                 authentication,

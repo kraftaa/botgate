@@ -1,8 +1,47 @@
 # Botgate
 
-Botgate is an evidence-first conformance and coverage analyzer for Web Bot Auth and RFC 9421 HTTP Message Signatures.
+Botgate shows what a Web Bot Auth signature actually protects—and tests whether
+your server enforces the boundary you intended.
 
-It answers five separate questions:
+If a signed request for `/orders/123` is changed to `/orders/999`, is the bot
+still authenticated? See the difference in two self-contained commands:
+
+```sh
+brew install kraftaa/tap/botgate
+botgate demo weak
+botgate demo strict
+```
+
+![Botgate weak and strict demo output](https://raw.githubusercontent.com/kraftaa/botgate/main/docs/weak-vs-strict.png)
+
+The weak demo signs only the authority:
+
+```text
+Signed boundary
+  authority  ✓
+  method     ○
+  path       ○
+  query      ○
+
+changed_method  still_valid  authenticated    allowed  PASS
+changed_path    still_valid  authenticated    denied   PASS
+changed_query   still_valid  authenticated    allowed  PASS
+```
+
+Those results pass because the demo intentionally declares that weak boundary.
+Botgate does not call a standards-compliant signature a vulnerability merely
+because it protects less than you expected. It shows the boundary explicitly,
+then checks it against the policy and access behavior you configured.
+
+The strict demo signs authority, method, path, and query:
+
+```text
+changed_method  invalid  unauthenticated  denied  PASS
+changed_path    invalid  unauthenticated  denied  PASS
+changed_query   invalid  unauthenticated  denied  PASS
+```
+
+Botgate keeps five questions separate:
 
 1. Is the message shaped correctly for a selected protocol profile?
 2. Does the signature verify with a supplied or safely discovered key?
@@ -10,7 +49,10 @@ It answers five separate questions:
 4. Does that coverage satisfy the application's declared policy?
 5. Does an authorized server authenticate the identity, and does the application independently allow access?
 
-Botgate deliberately does **not** infer authentication from an HTTP status code. Live tests require a dedicated authentication signal, normally a response header. Explicit status contracts remain available only through the `allow_status_authentication` compatibility override. Application access is measured by a separate, optional oracle.
+Signature validity, authenticated identity, and application access are not the
+same result. Botgate deliberately does **not** infer authentication from an HTTP
+status code. Live tests use a dedicated authentication signal, normally a
+response header, and can measure application access through a separate oracle.
 
 ## Status
 
@@ -77,7 +119,7 @@ botgate --version
 botgate --help
 ```
 
-## See the trust boundary in one command
+## Built-in demonstrations
 
 The built-in scenarios create temporary keys, start an isolated loopback verifier on an available port, run the mutation matrix, and clean up automatically. They need no configuration files and send nothing outside the machine.
 
@@ -87,7 +129,7 @@ Start with the weak-boundary scenario:
 botgate demo weak
 ```
 
-It signs only the authority. Method, path, and query mutations therefore remain cryptographically valid and authenticated. Application policy independently denies the changed path while allowing the changed method and query.
+It signs only the authority. Method, path, and query mutations therefore remain cryptographically valid and authenticated. Application access independently denies the changed path while allowing the changed method and query. These are passing observations under the demo's deliberately weak declared policy—not automatic policy failures.
 
 Compare it with strict binding:
 
@@ -231,11 +273,15 @@ botgate sign examples/request.http \
   --legacy-agent \
   --output cloudflare-request.http
 
-botgate inspect cloudflare-request.http --profile cloudflare
+botgate inspect cloudflare-request.http --profile cloudflare-2026-10
 botgate inspect cloudflare-request.http --profile ietf-draft-00
 ```
 
-The second command reports why the same request is legacy rather than conformant for a new IETF-draft sender.
+The dated Cloudflare profile is a snapshot of Cloudflare's published behavior,
+not a promise about future behavior. The shorter `--profile cloudflare` remains
+an accepted compatibility alias. Reports include the profile snapshot date and
+source. The second command above reports why the same request is legacy rather
+than conformant for a new IETF-draft sender.
 
 ## Policy
 
@@ -310,7 +356,15 @@ botgate inspect request.http --format json
 
 Exit status is `0` when no error-level findings exist, `1` when conformance, compatibility, crypto, or policy findings fail, and `4` for input or configuration errors detected after argument parsing. Clap uses its conventional status `2` for command-line usage errors. JSON retains independent finding categories and cryptographic/identity states so CI does not need to infer meaning from prose.
 
-Live JSON keeps `expected_crypto`, `expected_authentication`, `observed_authentication`, `expected_access`, and `observed_access` separate. A request can remain cryptographically valid and authenticated while application access is denied; Botgate does not collapse those facts into a generic “accepted” result.
+Live JSON keeps the stable `expected_crypto` compatibility field alongside
+`expected_authentication`, `observed_authentication`, `expected_access`, and
+`observed_access`. Some values in that field—such as `freshness_invalid` and
+`policy_invalid`—describe more than signature mathematics, so the text report
+labels the column **Expected validity**. A future schema can split signature
+math, protocol validity, and policy validity without conflating them. A request
+can remain cryptographically valid and authenticated while application access
+is denied; Botgate does not collapse those facts into a generic “accepted”
+result.
 
 ## Trust model
 

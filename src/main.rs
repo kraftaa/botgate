@@ -253,6 +253,7 @@ struct SignArgs {
 enum ProfileArg {
     #[value(name = "ietf-draft-00")]
     IetfDraft00,
+    #[value(name = "cloudflare-2026-10", alias = "cloudflare")]
     Cloudflare,
 }
 impl From<ProfileArg> for Profile {
@@ -336,7 +337,7 @@ fn run() -> Result<u8> {
         },
         Command::Protocol => {
             println!(
-                "Protocol: {PROTOCOL}\nPublished: 2026-09-01\nAlgorithms: Ed25519\nProfiles: ietf-draft-00, cloudflare"
+                "Protocol: {PROTOCOL}\nPublished: 2026-09-01\nAlgorithms: Ed25519\nProfiles: ietf-draft-00, cloudflare-2026-10 (alias: cloudflare)"
             );
             Ok(0)
         }

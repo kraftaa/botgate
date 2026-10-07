@@ -5,7 +5,7 @@ build-backend = "maturin"
 [project]
 name = "botgate"
 dynamic = ["version"]
-description = "Evidence-first Web Bot Auth conformance and coverage analyzer"
+description = "Test what Web Bot Auth signatures protect and whether servers enforce the intended policy"
 readme = "README.md"
 requires-python = ">=3.8"
 license = "MIT"

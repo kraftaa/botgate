@@ -25,11 +25,31 @@ impl Profile {
             Self::Cloudflare => "cloudflare-2026-10",
         }
     }
+
+    pub fn snapshot(self) -> &'static str {
+        match self {
+            Self::IetfDraft00 => "2026-09-01",
+            Self::Cloudflare => "2026-10-07",
+        }
+    }
+
+    pub fn source(self) -> &'static str {
+        match self {
+            Self::IetfDraft00 => {
+                "https://datatracker.ietf.org/doc/draft-ietf-webbotauth-httpsig-protocol/"
+            }
+            Self::Cloudflare => {
+                "https://developers.cloudflare.com/bots/reference/bot-verification/web-bot-auth/"
+            }
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
 pub struct Report {
     pub protocol: String,
+    pub profile_snapshot: String,
+    pub profile_source: String,
     /// Where the evaluated policy came from, so a CI log shows which rules applied.
     pub policy_source: String,
     pub request: RequestSummary,
@@ -223,6 +243,8 @@ impl Report {
         };
         Self {
             protocol: profile.name().into(),
+            profile_snapshot: profile.snapshot().into(),
+            profile_source: profile.source().into(),
             policy_source: "built-in defaults".into(),
             request: RequestSummary {
                 method: request.method.clone(),
@@ -241,8 +263,13 @@ impl Report {
 
     pub fn text(&self) -> String {
         let mut out = format!(
-            "Botgate analysis\n\nProfile: {}\nPolicy:  {}\nRequest: {} {}\n",
-            self.protocol, self.policy_source, self.request.method, self.request.target
+            "Botgate analysis\n\nProfile:  {}\nSnapshot: {}\nSource:   {}\nPolicy:   {}\nRequest:  {} {}\n",
+            self.protocol,
+            self.profile_snapshot,
+            self.profile_source,
+            self.policy_source,
+            self.request.method,
+            self.request.target
         );
         for sig in &self.signatures {
             out.push_str(&format!("\nSignature {}\n", sig.label));
