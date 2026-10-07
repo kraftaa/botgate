@@ -401,6 +401,65 @@ changed_path = "denied"
     assert_eq!(path["passed"], true);
 }
 
+#[test]
+fn self_contained_demos_expose_distinct_trust_boundaries() {
+    let strict = run_demo("strict");
+    assert_case(
+        &strict,
+        "changed_path",
+        "invalid",
+        "unauthenticated",
+        "denied",
+    );
+
+    let weak = run_demo("weak");
+    assert_case(
+        &weak,
+        "changed_method",
+        "still_valid",
+        "authenticated",
+        "allowed",
+    );
+    assert_case(
+        &weak,
+        "changed_path",
+        "still_valid",
+        "authenticated",
+        "denied",
+    );
+
+    let access = run_demo("access");
+    assert_case(&access, "original", "valid", "authenticated", "denied");
+}
+
+fn run_demo(name: &str) -> Value {
+    let output = botgate()
+        .args(["demo", name, "--format", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+fn assert_case(
+    report: &Value,
+    name: &str,
+    expected_crypto: &str,
+    authentication: &str,
+    access: &str,
+) {
+    let case = report["live"]["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|case| case["name"] == name)
+        .unwrap();
+    assert_eq!(case["expected_crypto"], expected_crypto, "{name}");
+    assert_eq!(case["observed_authentication"], authentication, "{name}");
+    assert_eq!(case["observed_access"], access, "{name}");
+    assert_eq!(case["passed"], true, "{name}");
+}
+
 fn read_head(stream: &mut TcpStream) -> String {
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))

@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, bail};
 use botgate::{
     PROTOCOL,
-    config::{Config, DEFAULT_CONFIG},
+    config::{AccessDecision, Config, DEFAULT_CONFIG, Requirement},
     crypto::{self, Jwks},
     demo, directory, discovery,
     http_message::Request,
@@ -15,6 +15,7 @@ use std::{
     collections::BTreeSet,
     fs,
     io::Write,
+    net::TcpListener,
     path::{Path, PathBuf},
     process::ExitCode,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -160,6 +161,8 @@ struct TestArgs {
     allow_unsafe_methods: bool,
     #[arg(long, value_enum, default_value = "text")]
     format: Format,
+    #[arg(skip)]
+    policy_label: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -181,6 +184,12 @@ enum DirectoryCommand {
 
 #[derive(Subcommand)]
 enum DemoCommand {
+    /// Demonstrate a signature that strongly binds method, path, and query.
+    Strict(DemoRunArgs),
+    /// Demonstrate the mutable boundary of a conformant authority-only signature.
+    Weak(DemoRunArgs),
+    /// Demonstrate a valid, authenticated identity being denied application access.
+    Access(DemoRunArgs),
     /// Serve a local Web Bot Auth verifier for weak/strict policy demonstrations.
     Serve {
         #[arg(long, default_value = ".botgate/directory.json")]
@@ -196,6 +205,19 @@ enum DemoCommand {
         #[arg(long, hide = true)]
         max_requests: Option<usize>,
     },
+}
+
+#[derive(clap::Args)]
+struct DemoRunArgs {
+    #[arg(long, value_enum, default_value = "text")]
+    format: Format,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum DemoScenario {
+    Strict,
+    Weak,
+    Access,
 }
 
 #[derive(clap::Args)]
@@ -290,6 +312,9 @@ fn run() -> Result<u8> {
             }
         },
         Command::Demo { command } => match command {
+            DemoCommand::Strict(args) => run_demo(DemoScenario::Strict, args.format),
+            DemoCommand::Weak(args) => run_demo(DemoScenario::Weak, args.format),
+            DemoCommand::Access(args) => run_demo(DemoScenario::Access, args.format),
             DemoCommand::Serve {
                 jwks,
                 config,
@@ -355,6 +380,178 @@ fn init(directory: &Path, force: bool) -> Result<()> {
         "\nThe directory file must be served over HTTPS for conformant Web Bot Auth discovery."
     );
     Ok(())
+}
+
+fn run_demo(scenario: DemoScenario, format: Format) -> Result<u8> {
+    let temporary = tempfile::tempdir().context("creating temporary demo directory")?;
+    let keys_directory = temporary.path().join("keys");
+    fs::create_dir_all(&keys_directory)?;
+    let private = keys_directory.join("private.key");
+    let jwk = crypto::generate(&private)?;
+    let public = keys_directory.join("public.jwk");
+    let directory = keys_directory.join("directory.json");
+    write_file(
+        &public,
+        (serde_json::to_string_pretty(&jwk)? + "\n").as_bytes(),
+        false,
+    )?;
+    write_file(
+        &directory,
+        (serde_json::to_string_pretty(&Jwks {
+            keys: vec![jwk.clone()],
+        })? + "\n")
+            .as_bytes(),
+        false,
+    )?;
+
+    let mut config = Config::default();
+    config.target.allow_private = true;
+    config.target.allow_http = true;
+    config.expect.header = Some("X-Botgate-Authenticated".into());
+    config.expect.authenticated_value = Some("true".into());
+    config.expect.unauthenticated_value = Some("false".into());
+    config.expect.access.header = Some("X-Botgate-Access".into());
+    config.expect.access.allowed_value = Some("allowed".into());
+    config.expect.access.denied_value = Some("denied".into());
+
+    let (name, explanation, path, components) = match scenario {
+        DemoScenario::Strict => {
+            config.policy.query = Requirement::Required;
+            set_access_expectations(&mut config, &["original"], AccessDecision::Allowed);
+            set_access_expectations(&mut config, DEMO_MUTATIONS, AccessDecision::Denied);
+            (
+                "strict",
+                "Method, path, and query are signed. Mutations fail authentication and protected access.",
+                "/protected?view=summary",
+                "@authority,@method,@path,@query",
+            )
+        }
+        DemoScenario::Weak => {
+            config.policy.require_method = false;
+            config.policy.require_path = false;
+            config.policy.query = Requirement::Ignore;
+            set_access_expectations(
+                &mut config,
+                &["original", "changed_method", "changed_query"],
+                AccessDecision::Allowed,
+            );
+            set_access_expectations(
+                &mut config,
+                &[
+                    "changed_path",
+                    "changed_authority",
+                    "corrupted_signature",
+                    "removed_signature_agent",
+                    "changed_signature_agent",
+                    "expired",
+                    "future_created",
+                    "long_expiration",
+                    "missing_expires",
+                    "unknown_key",
+                ],
+                AccessDecision::Denied,
+            );
+            (
+                "weak",
+                "Only authority is signed. Method, path, and query can change while identity remains authenticated.",
+                "/protected?view=summary",
+                "@authority",
+            )
+        }
+        DemoScenario::Access => {
+            config.policy.query = Requirement::Required;
+            set_access_expectations(&mut config, &["original"], AccessDecision::Denied);
+            set_access_expectations(&mut config, DEMO_MUTATIONS, AccessDecision::Denied);
+            (
+                "access",
+                "The original signature and identity are valid, but the application denies the admin resource.",
+                "/admin?view=summary",
+                "@authority,@method,@path,@query",
+            )
+        }
+    };
+    config.validate()?;
+    let config_path = temporary.path().join("botgate.toml");
+    write_file(
+        &config_path,
+        (toml::to_string_pretty(&config)? + "\n").as_bytes(),
+        false,
+    )?;
+
+    let listener = TcpListener::bind("127.0.0.1:0").context("binding demo listener")?;
+    let address = listener.local_addr()?;
+    let server_keys = Jwks { keys: vec![jwk] };
+    let server_policy = config.policy.clone();
+    let server = std::thread::spawn(move || {
+        demo::serve_listener(
+            listener,
+            &server_keys,
+            &server_policy,
+            Some(13),
+            demo::AccessMode::Routes,
+        )
+    });
+
+    match format {
+        Format::Text => println!("Botgate {name} demo\n\n{explanation}\n"),
+        Format::Json => eprintln!("Botgate {name} demo: {explanation}"),
+    }
+    let result = test(TestArgs {
+        source: format!("http://{address}{path}"),
+        jwks: directory,
+        live: None,
+        agent: Some("https://agent.example".into()),
+        key: private,
+        jwk: public,
+        components: components.into(),
+        expires_in: 300,
+        label: "sig1".into(),
+        legacy_agent: false,
+        allow_insecure_agent: false,
+        config: Some(config_path),
+        profile: ProfileArg::IetfDraft00,
+        context: None,
+        accepted_status: Vec::new(),
+        rejected_status: Vec::new(),
+        allow_status_authentication: false,
+        auth_header: None,
+        authenticated_value: None,
+        unauthenticated_value: None,
+        allow_private_target: false,
+        allow_http: false,
+        allow_unsafe_methods: false,
+        format,
+        policy_label: Some(format!("built-in demo: {name}")),
+    });
+    if result.is_ok() {
+        server
+            .join()
+            .map_err(|_| anyhow::anyhow!("demo verifier thread panicked"))??;
+    }
+    result
+}
+
+const DEMO_MUTATIONS: &[&str] = &[
+    "changed_method",
+    "changed_path",
+    "changed_query",
+    "changed_authority",
+    "corrupted_signature",
+    "removed_signature_agent",
+    "changed_signature_agent",
+    "expired",
+    "future_created",
+    "long_expiration",
+    "missing_expires",
+    "unknown_key",
+];
+
+fn set_access_expectations(config: &mut Config, cases: &[&str], decision: AccessDecision) {
+    config
+        .expect
+        .access
+        .cases
+        .extend(cases.iter().map(|name| ((*name).to_string(), decision)));
 }
 
 fn analyze(
@@ -489,7 +686,9 @@ fn test(args: TestArgs) -> Result<u8> {
         context.as_ref(),
         true,
     );
-    if let Some(source) = &config.source {
+    if let Some(label) = &args.policy_label {
+        report.policy_source = label.clone();
+    } else if let Some(source) = &config.source {
         report.policy_source = source.display().to_string();
     }
     if let Some(target) = target.as_ref() {

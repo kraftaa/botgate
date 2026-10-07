@@ -31,7 +31,8 @@ The current implementation includes:
 - expired, future-created, long/missing-expiry, unknown-key, method, path, query, authority, covered-header, identity-header, and corrupted-signature cases;
 - SSRF-resistant `Signature-Agent` discovery for directory, `jwks_uri`, and CIMD forms;
 - a local well-known key-directory server;
-- a local weak/strict verifier for reproducible demonstrations.
+- self-contained strict, weak-boundary, and access-denial demonstrations;
+- a local verifier for custom reproducible demonstrations.
 
 Network operations disable redirects and proxies, pin a validated DNS result, cap response sizes and timeouts, and reject private, loopback, link-local, and special-use addresses by default. Local test overrides are explicit.
 
@@ -76,7 +77,35 @@ botgate --version
 botgate --help
 ```
 
-## End-to-end example
+## See the trust boundary in one command
+
+The built-in scenarios create temporary keys, start an isolated loopback verifier on an available port, run the mutation matrix, and clean up automatically. They need no configuration files and send nothing outside the machine.
+
+Start with the weak-boundary scenario:
+
+```sh
+botgate demo weak
+```
+
+It signs only the authority. Method, path, and query mutations therefore remain cryptographically valid and authenticated. Application policy independently denies the changed path while allowing the changed method and query.
+
+Compare it with strict binding:
+
+```sh
+botgate demo strict
+```
+
+Here method, path, and query are signed. Changing any of them invalidates authentication and protected access is denied.
+
+Finally, demonstrate authorization remaining independent of authentication:
+
+```sh
+botgate demo access
+```
+
+The original request has a valid signature and authenticated identity, but access to the admin resource is denied. Each scenario also supports `--format json` for machine-readable output.
+
+## Manual end-to-end example
 
 Generate a test key and policy:
 
@@ -134,9 +163,9 @@ botgate test signed-request.http \
 
 The matrix is generated independently for every signature in the request.
 
-## Live end-to-end test
+## Custom live end-to-end test
 
-Botgate includes a local verifier so the complete behavior can be demonstrated without another project. Start it in one terminal:
+For custom policies and requests, start the low-level local verifier in one terminal:
 
 ```sh
 botgate demo serve \

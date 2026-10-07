@@ -6,7 +6,8 @@ Botgate is pre-1.0. Only the latest released version receives security fixes.
 
 | Version | Supported |
 |---------|-----------|
-| 0.3.x   | Yes       |
+| 0.4.x   | Yes       |
+| 0.3.x   | No        |
 | 0.2.x   | No        |
 | 0.1.x   | No        |
 

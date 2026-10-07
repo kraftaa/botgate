@@ -15,6 +15,13 @@ use crate::{
     signature,
 };
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum AccessMode {
+    #[default]
+    Public,
+    Routes,
+}
+
 pub fn serve(
     jwks_path: &Path,
     policy: &Policy,
@@ -29,10 +36,20 @@ pub fn serve(
     let listener = TcpListener::bind(bind).with_context(|| format!("binding {bind}"))?;
     println!("Botgate demo verifier listening on http://{bind}");
     println!("It reports authentication and application access in separate response headers.");
+    serve_listener(listener, &keys, policy, max_requests, AccessMode::Public)
+}
+
+pub fn serve_listener(
+    listener: TcpListener,
+    keys: &Jwks,
+    policy: &Policy,
+    max_requests: Option<usize>,
+    access_mode: AccessMode,
+) -> Result<()> {
     for (handled, connection) in listener.incoming().enumerate() {
         match connection {
             Ok(mut stream) => {
-                if let Err(error) = handle(&mut stream, &keys, policy) {
+                if let Err(error) = handle(&mut stream, keys, policy, access_mode) {
                     let _ = respond(&mut stream, 400, false, false, &format!("{error:#}"));
                 }
             }
@@ -45,7 +62,12 @@ pub fn serve(
     Ok(())
 }
 
-fn handle(stream: &mut TcpStream, keys: &Jwks, policy: &Policy) -> Result<()> {
+fn handle(
+    stream: &mut TcpStream,
+    keys: &Jwks,
+    policy: &Policy,
+    access_mode: AccessMode,
+) -> Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
     let bytes = read_request(stream)?;
@@ -66,9 +88,19 @@ fn handle(stream: &mut TcpStream, keys: &Jwks, policy: &Policy) -> Result<()> {
         false,
     );
     let authenticated = !report.has_errors();
-    // Authentication and application access are intentionally independent:
-    // this demo endpoint is public, so a request may be unauthenticated yet allowed.
-    respond(stream, 200, authenticated, true, &report.text())
+    let path = request.target.split('?').next().unwrap_or("/");
+    let access_allowed = match access_mode {
+        // Authentication and application access are intentionally independent:
+        // the compatibility demo endpoint is public.
+        AccessMode::Public => true,
+        AccessMode::Routes => match path {
+            "/public" => true,
+            "/protected" => authenticated,
+            "/admin" => false,
+            _ => false,
+        },
+    };
+    respond(stream, 200, authenticated, access_allowed, &report.text())
 }
 
 fn read_request(stream: &mut TcpStream) -> Result<Vec<u8>> {
