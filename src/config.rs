@@ -190,13 +190,14 @@ impl Config {
                 "expect.header, accepted_value, and rejected_value must be configured together"
             ),
         }
-        if let Some(header) = &self.expect.header
-            && (header.is_empty()
+        if let Some(header) = &self.expect.header {
+            if header.is_empty()
                 || !header
                     .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte)))
-        {
-            anyhow::bail!("expect.header is not a valid HTTP field name");
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte))
+            {
+                anyhow::bail!("expect.header is not a valid HTTP field name");
+            }
         }
         Ok(())
     }

@@ -66,10 +66,10 @@ pub fn get(target: &Url, accept: &str, policy: &NetworkPolicy) -> Result<HttpRes
 }
 
 fn collect(mut response: reqwest::blocking::Response, limit: usize) -> Result<HttpResponse> {
-    if let Some(length) = response.content_length()
-        && length > limit as u64
-    {
-        bail!("response Content-Length {length} exceeds byte limit {limit}");
+    if let Some(length) = response.content_length() {
+        if length > limit as u64 {
+            bail!("response Content-Length {length} exceeds byte limit {limit}");
+        }
     }
     let status = response.status().as_u16();
     let headers = response.headers().clone();

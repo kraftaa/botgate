@@ -56,11 +56,12 @@ pub fn validate_jwks(bytes: &[u8], enforce_thumbprint_kid: bool) -> Result<Jwks>
     }
     for key in &keys.keys {
         let thumbprint = crypto::thumbprint(key)?;
-        if enforce_thumbprint_kid
-            && let Some(kid) = &key.kid
-            && kid != &thumbprint
-        {
-            bail!("directory key kid does not match its JWK thumbprint");
+        if enforce_thumbprint_kid {
+            if let Some(kid) = &key.kid {
+                if kid != &thumbprint {
+                    bail!("directory key kid does not match its JWK thumbprint");
+                }
+            }
         }
         if key.r#use.as_deref().is_some_and(|value| value != "sig") {
             bail!("directory key use must be sig when present");
