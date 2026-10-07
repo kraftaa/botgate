@@ -97,12 +97,14 @@ pub enum Level {
 }
 
 impl Report {
+    #[allow(clippy::too_many_arguments)]
     pub fn analyze(
         request: &Request,
         parsed: &ParsedSignatures,
         policy: &Policy,
         profile: Profile,
         jwks: Option<&Jwks>,
+        identity_discovered: bool,
         context: Option<&Url>,
         include_mutations: bool,
     ) -> Self {
@@ -159,15 +161,22 @@ impl Report {
                     Some(sig) => match crypto::verify(request, input, sig, keys, context) {
                         Ok(_) => {
                             findings.push(info(
-                                "BG-K100",
+                                if identity_discovered { "BG-K101" } else { "BG-K100" },
                                 "crypto",
-                                format!(
-                                    "signature {} verified with the supplied key set",
-                                    input.label
-                                ),
+                                if identity_discovered {
+                                    format!("signature {} verified with key material discovered from its Signature-Agent URL", input.label)
+                                } else {
+                                    format!("signature {} verified with the supplied key set", input.label)
+                                },
                             ));
-                            // Supplying a local key proves key control, not URL-to-key discovery.
-                            (Status::Valid, Status::KeyOnly)
+                            (
+                                Status::Valid,
+                                if identity_discovered {
+                                    Status::Valid
+                                } else {
+                                    Status::KeyOnly
+                                },
+                            )
                         }
                         Err(e) => {
                             findings.push(error(
@@ -416,7 +425,7 @@ fn profile_findings(
         findings.push(error(
             "BG-C112",
             "conformance",
-            "v0.1 can verify only alg=ed25519",
+            "Botgate currently verifies only alg=ed25519",
         ));
     }
     if input.param("tag").and_then(Value::as_str) != Some("web-bot-auth") {
@@ -707,6 +716,7 @@ mod tests {
             &policy,
             Profile::IetfDraft00,
             None,
+            false,
             None,
             true,
         );
@@ -745,6 +755,7 @@ mod tests {
             &relaxed_policy(),
             Profile::IetfDraft00,
             None,
+            false,
             None,
             false,
         );
@@ -792,6 +803,7 @@ mod tests {
             &relaxed_policy(),
             Profile::IetfDraft00,
             None,
+            false,
             None,
             false,
         );
@@ -827,6 +839,7 @@ mod tests {
             &policy,
             Profile::IetfDraft00,
             None,
+            false,
             None,
             true,
         )
@@ -883,6 +896,7 @@ mod tests {
             &relaxed_policy(),
             Profile::IetfDraft00,
             None,
+            false,
             None,
             false,
         );

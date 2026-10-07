@@ -6,7 +6,8 @@ Botgate is pre-1.0. Only the latest released version receives security fixes.
 
 | Version | Supported |
 |---------|-----------|
-| 0.1.x   | Yes       |
+| 0.2.x   | Yes       |
+| 0.1.x   | No        |
 
 ## Reporting a vulnerability
 
@@ -21,18 +22,21 @@ You should receive an acknowledgement within 7 days. Once a fix is available, it
 
 ## Trust model
 
-Botgate is an offline analyzer. Its guarantees are deliberately narrow.
+Botgate has offline analysis and explicitly requested network modes. Its guarantees are deliberately narrow.
 
 **What Botgate does not do**
 
-- It makes no network requests. It never fetches `Signature-Agent` key directories, never resolves URLs, and never sends the original or mutated requests anywhere.
-- The `test` command's mutation matrix is computed locally; nothing is sent.
-- It does not treat an HTTP response status as evidence that a signature was accepted.
+- `inspect`, `sign`, and file-based `test` without `--live` make no network requests.
+- `verify --discover` fetches only the covered `Signature-Agent` key source.
+- `test URL` and file-based `test --live URL` send the original and reported mutations to the specified target.
+- Live testing does not treat an arbitrary HTTP status as authentication evidence. It requires an explicit status or header oracle.
+- Botgate does not follow redirects or use environment proxies. It validates and pins DNS resolution, limits response size and time, and blocks private, loopback, link-local, and special-use addresses unless the user provides an explicit local-test override.
 
 **What a result means**
 
 - `cryptographic_status: valid` means the signature verifies against a key **you supplied** with `--jwks`, whose JWK thumbprint equals the signature's `keyid`.
 - `identity_status: key_only` means exactly that. A locally supplied key proves nothing about who controls the `Signature-Agent` URL; Botgate never reports that URL as verified.
+- `identity_status: valid` after `--discover` means the signature verified using key material resolved from that signature's covered identity URL. Discovery is currently limited to one signature per command to prevent cross-identity key attribution.
 - Coverage and policy findings describe which request properties the signature binds. A body is reported as intact only when `Content-Digest` is covered **and** its SHA-256 value matches the body bytes in the input file.
 - Results are only as trustworthy as the input file. Botgate analyzes the bytes you give it; it cannot tell whether they match what a server actually received.
 
@@ -41,12 +45,14 @@ Botgate is an offline analyzer. Its guarantees are deliberately narrow.
 - `botgate init` creates an Ed25519 private key at `.botgate/private.key`. On Unix it is created atomically with mode `0600`. On Windows it inherits the directory's ACL, so restrict access yourself.
 - Botgate never prints the private key and never overwrites an existing one.
 - Generated keys are intended for testing. Do not reuse them as production signing keys.
+- `directory serve` and `demo serve` bind to loopback by default. Their non-loopback overrides expose development services and should be used only on controlled networks.
 
 ## In scope
 
 - Parser bugs in the HTTP message or Structured Fields handling that cause panics, unbounded resource use, or inputs being accepted that a conforming implementation would reject (or the reverse).
 - Any case where Botgate reports a signature as valid, a property as covered, or a policy as satisfied when it is not.
 - Private-key exposure through file permissions, logs, or output.
+- SSRF bypasses, redirect/proxy bypasses, DNS-rebinding issues, or unsafe mutation behavior in network modes.
 
 ## Out of scope
 

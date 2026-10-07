@@ -1,7 +1,12 @@
 pub mod config;
 pub mod crypto;
+pub mod demo;
+pub mod directory;
+pub mod discovery;
 pub mod http_message;
+pub mod live;
 pub mod mutation;
+pub mod network;
 pub mod report;
 pub mod signature;
 

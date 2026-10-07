@@ -1,6 +1,5 @@
 name: CI
 
-# The repository is private, so Actions minutes are billed; macOS and Windows runners cost more than Linux.
 # Run on main and pull requests only, and cancel superseded runs.
 on:
   push:

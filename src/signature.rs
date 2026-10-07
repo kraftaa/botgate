@@ -351,10 +351,17 @@ fn dictionary_value(raw: &str, key: &str) -> Result<String> {
 }
 
 pub fn dictionary_string_member(raw: &str, key: &str) -> Result<String> {
+    Ok(dictionary_string_member_with_params(raw, key)?.0)
+}
+
+pub fn dictionary_string_member_with_params(
+    raw: &str,
+    key: &str,
+) -> Result<(String, Vec<(String, Value)>)> {
     let mut seen = BTreeSet::new();
     let mut selected = None;
     for member in split_top_level(raw, ',')? {
-        let (member_key, value, _) = parse_dictionary_member(member)?;
+        let (member_key, value, params) = parse_dictionary_member(member)?;
         if !seen.insert(member_key.clone()) {
             bail!("duplicate dictionary key {member_key}");
         }
@@ -363,7 +370,7 @@ pub fn dictionary_string_member(raw: &str, key: &str) -> Result<String> {
                 Value::String(value) => value,
                 _ => bail!("dictionary member {key} is not a string"),
             };
-            selected = Some(result);
+            selected = Some((result, params));
         }
     }
     selected.ok_or_else(|| anyhow!("dictionary key {key} is absent"))

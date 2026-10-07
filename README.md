@@ -2,18 +2,19 @@
 
 Botgate is an evidence-first conformance and coverage analyzer for Web Bot Auth and RFC 9421 HTTP Message Signatures.
 
-It answers four separate questions:
+It answers five separate questions:
 
 1. Is the message shaped correctly for a selected protocol profile?
-2. Does the signature verify with an explicitly supplied key?
+2. Does the signature verify with a supplied or safely discovered key?
 3. Which request properties are cryptographically bound?
 4. Does that coverage satisfy the application's declared policy?
+5. Does an authorized server enforce the same boundary under controlled mutations?
 
-Botgate deliberately does **not** infer authentication from an HTTP status code. A `200` response is not evidence that a server accepted a signature; the resource may simply be public.
+Botgate deliberately does **not** infer authentication from an HTTP status code. Live tests require the user to define an acceptance/rejection oracle using classified statuses or a dedicated response header.
 
 ## Status
 
-This repository implements a focused v0.1:
+The current implementation includes:
 
 - current `draft-ietf-webbotauth-httpsig-protocol-00` inspection;
 - the current Cloudflare compatibility profile;
@@ -25,9 +26,14 @@ This repository implements a focused v0.1:
 - semantic coverage and configurable policy evaluation;
 - `Content-Digest` SHA-256 validation;
 - JSON output for CI;
-- a safe offline mutation matrix.
+- an offline mutation matrix;
+- controlled live-server testing with an explicit authentication oracle;
+- expired, future-created, long/missing-expiry, unknown-key, method, path, query, authority, covered-header, identity-header, and corrupted-signature cases;
+- SSRF-resistant `Signature-Agent` discovery for directory, `jwks_uri`, and CIMD forms;
+- a local well-known key-directory server;
+- a local weak/strict verifier for reproducible demonstrations.
 
-It does not fetch untrusted key-directory URLs or send active mutations. Those operations require an SSRF-safe resolver and an explicit authentication oracle; pretending that response status alone is an oracle would produce misleading results.
+Network operations disable redirects and proxies, pin a validated DNS result, cap response sizes and timeouts, and reject private, loopback, link-local, and special-use addresses by default. Local test overrides are explicit.
 
 ## Install
 
@@ -118,7 +124,7 @@ botgate verify signed-request.http \
   --config examples/strict-policy.toml
 ```
 
-Show the offline mutation matrix:
+Show the offline mutation matrix (a request file means nothing is sent):
 
 ```sh
 botgate test signed-request.http \
@@ -126,8 +132,56 @@ botgate test signed-request.http \
   --config examples/strict-policy.toml
 ```
 
-Nothing is sent by `test`. In particular, Botgate never turns a `GET` into a live `POST` or `DELETE` request.
 The matrix is generated independently for every signature in the request.
+
+## Live end-to-end test
+
+Botgate includes a local verifier so the complete behavior can be demonstrated without another project. Start it in one terminal:
+
+```sh
+botgate demo serve \
+  --jwks .botgate/directory.json \
+  --config examples/strict-policy.toml
+```
+
+Then sign and test the URL directly:
+
+```sh
+botgate test 'http://127.0.0.1:8080/orders/123?view=summary' \
+  --agent https://agent.example \
+  --config examples/live-test.toml
+```
+
+The explicit local-network and HTTP permissions are in `examples/live-test.toml`. Against the strict verifier, the original request must be accepted and invalid mutations must be rejected. The live report compares locally predicted cryptographic behavior with the configured server oracle; an unclassified response is `indeterminate`, not success.
+
+The original weak-versus-strict demonstration is also included. Start the demo with `examples/weak-policy.toml`, then test with `--components @authority --config examples/weak-live-test.toml`. Method, path, and query mutations remain cryptographically valid and the weak verifier accepts them; Botgate reports that as conformant behavior matching the deliberately weak policy, not as a vulnerability.
+
+To test a real authorized HTTPS endpoint, private-network and HTTP overrides are unnecessary:
+
+```sh
+botgate test 'https://staging.example.com/protected' \
+  --agent https://keys.agent.example \
+  --accepted-status 200 \
+  --rejected-status 401,403
+```
+
+Botgate generates only `GET` and `HEAD` mutations by default. Replaying another method requires `--allow-unsafe-methods`.
+
+## Key discovery and directory serving
+
+Verify a saved request using the key source covered by `Signature-Agent`:
+
+```sh
+botgate verify signed-request.http --discover
+```
+
+Discovery requires HTTPS, never follows redirects, validates directory content, limits response bytes and key count, and keeps key material scoped to one Signature-Agent identity. For local development, serve the generated directory at the draft's well-known path:
+
+```sh
+botgate directory serve --port 8787
+```
+
+The built-in directory server binds to loopback and uses HTTP, so it is for local tests only. A conformant public directory must use HTTPS and the specified media type.
 
 ## Cloudflare interoperability
 
@@ -169,10 +223,42 @@ max_age_seconds = 300
 max_lifetime_seconds = 300
 allowed_future_skew_seconds = 30
 require_nonce = false
+
+[target]
+url = "https://staging.example.com/protected"
+timeout_seconds = 10
+max_response_bytes = 1048576
+allow_private = false
+allow_http = false
+
+[expect]
+accepted_statuses = [200]
+rejected_statuses = [401, 403]
+
+# A header oracle is stronger when the endpoint can provide one:
+# header = "X-Bot-Authenticated"
+# accepted_value = "true"
+# rejected_value = "false"
+
+[tests]
+changed_method = true
+changed_path = true
+changed_query = true
+changed_authority = true
+changed_signed_header = true
+changed_body = true
+corrupted_signature = true
+removed_signature_agent = true
+changed_signature_agent = true
+expired = true
+future_created = true
+long_expiration = true
+missing_expires = true
+unknown_key = true
 ```
 
 Coverage is semantic rather than a flat string check. For example, `@target-uri` satisfies authority, path, and query coverage, while `@path` does not cover the query. Body integrity requires a covered `Content-Digest` (the whole field, or its `sha-256` member via `;key="sha-256"`) whose SHA-256 value matches the body bytes. Covering only another member, such as `sha-512`, does not count.
-Individual `@query-param` components are reported as partial evidence and do not satisfy a policy requiring the entire query to be bound. `@request-target` covers path and query for the raw HTTP/1.1 requests accepted by v0.1.
+Individual `@query-param` components are reported as partial evidence and do not satisfy a policy requiring the entire query to be bound. `@request-target` covers path and query for the raw HTTP/1.1 requests Botgate accepts.
 
 ## JSON and exit behavior
 
@@ -186,7 +272,7 @@ Exit status is `0` when no error-level findings exist, `1` when conformance, com
 
 ## Trust model
 
-Verification with `--jwks` establishes that the supplied key validates the signature. It intentionally reports identity as `key_only`: loading a local JWK does not prove that an HTTPS `Signature-Agent` URL published that key. URL attribution requires a safe HTTPS discovery operation and its cache state.
+Verification with `--jwks` establishes that the supplied key validates the signature and reports identity as `key_only`. `--discover` reports a verified identity only when key material was fetched from the request's covered `Signature-Agent` locator and the signature validates with the selected key.
 
 The signing command derives the thumbprint from the private key and refuses to proceed if `--jwk` names a different key pair.
 
@@ -194,7 +280,7 @@ Similarly, signing `Content-Digest` binds the digest header. Botgate separately 
 
 ## Supported signature components
 
-v0.1 reconstructs:
+Botgate reconstructs:
 
 - `@method`
 - `@authority`

@@ -25,6 +25,10 @@ pub struct Jwk {
     pub kid: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub r#use: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nbf: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exp: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,6 +82,8 @@ fn jwk_from_pkcs8(bytes: &[u8]) -> Result<Jwk> {
         x,
         kid: Some(kid),
         r#use: Some("sig".into()),
+        nbf: None,
+        exp: None,
     })
 }
 
@@ -124,6 +130,15 @@ pub fn verify(
         .iter()
         .find(|k| thumbprint(k).ok().as_deref() == Some(keyid))
         .ok_or_else(|| anyhow!("no Ed25519 key matching keyid {keyid}"))?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs() as i64;
+    if jwk.nbf.is_some_and(|nbf| now < nbf) {
+        bail!("matching key is not active yet");
+    }
+    if jwk.exp.is_some_and(|exp| now >= exp) {
+        bail!("matching key has expired");
+    }
     let public = URL_SAFE_NO_PAD
         .decode(&jwk.x)
         .context("invalid base64url JWK x")?;
@@ -200,6 +215,9 @@ mod tests {
         let sig = sign(&request, &input, &private, None).unwrap();
         let keys = Jwks { keys: vec![jwk] };
         verify(&request, &input, &sig, &keys, None).unwrap();
+        let mut expired_keys = keys.clone();
+        expired_keys.keys[0].exp = Some(1);
+        assert!(verify(&request, &input, &sig, &expired_keys, None).is_err());
         let mut wrong_alg = input.clone();
         wrong_alg
             .params
@@ -255,6 +273,8 @@ mod tests {
                 x: "JrQLj5P_89iXES9-vFgrIy29clF9CC_oPPsw3c5D0bs".into(),
                 kid: Some("poqkLGiymh_W0uP6PZFw-dvez3QJT5SolqXBCW38r0U".into()),
                 r#use: Some("sig".into()),
+                nbf: None,
+                exp: None,
             }],
         };
         verify(

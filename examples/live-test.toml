@@ -1,0 +1,36 @@
+[policy]
+require_authority = true
+require_method = true
+require_path = true
+query = "required"
+body = "ignore"
+max_age_seconds = 300
+max_lifetime_seconds = 300
+allowed_future_skew_seconds = 30
+require_nonce = false
+
+[target]
+allow_private = true
+allow_http = true
+timeout_seconds = 10
+max_response_bytes = 1048576
+
+[expect]
+accepted_statuses = [200]
+rejected_statuses = [401]
+
+[tests]
+changed_method = true
+changed_path = true
+changed_query = true
+changed_authority = true
+changed_signed_header = true
+changed_body = true
+corrupted_signature = true
+removed_signature_agent = true
+changed_signature_agent = true
+expired = true
+future_created = true
+long_expiration = true
+missing_expires = true
+unknown_key = true
