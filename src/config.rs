@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::{fs, path::Path};
+use std::{collections::BTreeMap, fs, path::Path};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -39,11 +39,35 @@ impl Default for Target {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Expect {
-    pub accepted_statuses: Vec<u16>,
-    pub rejected_statuses: Vec<u16>,
+    #[serde(alias = "accepted_statuses")]
+    pub authenticated_statuses: Vec<u16>,
+    #[serde(alias = "rejected_statuses")]
+    pub unauthenticated_statuses: Vec<u16>,
+    pub allow_status_authentication: bool,
     pub header: Option<String>,
-    pub accepted_value: Option<String>,
-    pub rejected_value: Option<String>,
+    #[serde(alias = "accepted_value")]
+    pub authenticated_value: Option<String>,
+    #[serde(alias = "rejected_value")]
+    pub unauthenticated_value: Option<String>,
+    pub access: AccessExpect,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AccessExpect {
+    pub allowed_statuses: Vec<u16>,
+    pub denied_statuses: Vec<u16>,
+    pub header: Option<String>,
+    pub allowed_value: Option<String>,
+    pub denied_value: Option<String>,
+    pub cases: BTreeMap<String, AccessDecision>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AccessDecision {
+    Allowed,
+    Denied,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -159,48 +183,99 @@ impl Config {
         {
             anyhow::bail!("target.max_response_bytes must be between 1 and 16777216");
         }
-        if self
+        validate_status_pair(
+            &self.expect.authenticated_statuses,
+            &self.expect.unauthenticated_statuses,
+            "authenticated_statuses",
+            "unauthenticated_statuses",
+        )?;
+        validate_header_oracle(
+            self.expect.header.as_deref(),
+            self.expect.authenticated_value.as_deref(),
+            self.expect.unauthenticated_value.as_deref(),
+            "expect",
+        )?;
+        validate_status_pair(
+            &self.expect.access.allowed_statuses,
+            &self.expect.access.denied_statuses,
+            "access.allowed_statuses",
+            "access.denied_statuses",
+        )?;
+        validate_header_oracle(
+            self.expect.access.header.as_deref(),
+            self.expect.access.allowed_value.as_deref(),
+            self.expect.access.denied_value.as_deref(),
+            "expect.access",
+        )?;
+        const CASES: &[&str] = &[
+            "original",
+            "changed_method",
+            "changed_path",
+            "changed_query",
+            "changed_authority",
+            "changed_signed_header",
+            "changed_body",
+            "corrupted_signature",
+            "removed_signature_agent",
+            "changed_signature_agent",
+            "expired",
+            "future_created",
+            "long_expiration",
+            "missing_expires",
+            "unknown_key",
+        ];
+        if let Some(name) = self
             .expect
-            .accepted_statuses
-            .iter()
-            .any(|status| !(100..=599).contains(status))
-            || self
-                .expect
-                .rejected_statuses
-                .iter()
-                .any(|status| !(100..=599).contains(status))
+            .access
+            .cases
+            .keys()
+            .find(|name| !CASES.contains(&name.as_str()))
         {
-            anyhow::bail!("expected HTTP statuses must be between 100 and 599");
-        }
-        if self
-            .expect
-            .accepted_statuses
-            .iter()
-            .any(|status| self.expect.rejected_statuses.contains(status))
-        {
-            anyhow::bail!("accepted_statuses and rejected_statuses must not overlap");
-        }
-        match (
-            &self.expect.header,
-            &self.expect.accepted_value,
-            &self.expect.rejected_value,
-        ) {
-            (None, None, None) | (Some(_), Some(_), Some(_)) => {}
-            _ => anyhow::bail!(
-                "expect.header, accepted_value, and rejected_value must be configured together"
-            ),
-        }
-        if let Some(header) = &self.expect.header {
-            if header.is_empty()
-                || !header
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte))
-            {
-                anyhow::bail!("expect.header is not a valid HTTP field name");
-            }
+            anyhow::bail!("unknown access expectation case {name}");
         }
         Ok(())
     }
+}
+
+fn validate_status_pair(
+    first: &[u16],
+    second: &[u16],
+    first_name: &str,
+    second_name: &str,
+) -> Result<()> {
+    if first
+        .iter()
+        .chain(second)
+        .any(|status| !(100..=599).contains(status))
+    {
+        anyhow::bail!("expected HTTP statuses must be between 100 and 599");
+    }
+    if first.iter().any(|status| second.contains(status)) {
+        anyhow::bail!("{first_name} and {second_name} must not overlap");
+    }
+    Ok(())
+}
+
+fn validate_header_oracle(
+    header: Option<&str>,
+    positive: Option<&str>,
+    negative: Option<&str>,
+    prefix: &str,
+) -> Result<()> {
+    match (header, positive, negative) {
+        (None, None, None) | (Some(_), Some(_), Some(_)) => {}
+        _ => anyhow::bail!("{prefix} header and both outcome values must be configured together"),
+    }
+    if let Some(header) = header {
+        if header.is_empty()
+            || !header
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte))
+        {
+            anyhow::bail!("{prefix}.header is not a valid HTTP field name");
+        }
+    }
+    Ok(())
 }
 
 pub const DEFAULT_CONFIG: &str = r#"# Botgate policy: these are application requirements, not universal Web Bot Auth rules.
@@ -224,8 +299,9 @@ require_nonce = false
 # allow_http = false
 #
 # [expect]
-# accepted_statuses = [200]
-# rejected_statuses = [401, 403]
+# header = "X-Agent-Authenticated"
+# authenticated_value = "true"
+# unauthenticated_value = "false"
 "#;
 
 #[cfg(test)]

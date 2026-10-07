@@ -48,7 +48,7 @@ enum Command {
     /// Verify an Ed25519 signature using local or safely discovered key material.
     Verify(VerifyArgs),
     /// Produce an offline matrix, or run controlled mutations against an authorized target.
-    Test(TestArgs),
+    Test(Box<TestArgs>),
     /// Sign a raw HTTP request with the generated Ed25519 test key.
     Sign(SignArgs),
     /// Serve test key material for local development.
@@ -136,10 +136,22 @@ struct TestArgs {
     profile: ProfileArg,
     #[arg(long)]
     context: Option<Url>,
+    /// Statuses meaning authenticated, used only with --allow-status-authentication.
     #[arg(long, value_delimiter = ',')]
     accepted_status: Vec<u16>,
+    /// Statuses meaning unauthenticated, used only with --allow-status-authentication.
     #[arg(long, value_delimiter = ',')]
     rejected_status: Vec<u16>,
+    /// Treat explicitly classified statuses as authentication evidence (compatibility mode).
+    #[arg(long)]
+    allow_status_authentication: bool,
+    /// Response header that explicitly reports whether agent authentication succeeded.
+    #[arg(long)]
+    auth_header: Option<String>,
+    #[arg(long, requires = "auth_header")]
+    authenticated_value: Option<String>,
+    #[arg(long, requires = "auth_header")]
+    unauthenticated_value: Option<String>,
     #[arg(long)]
     allow_private_target: bool,
     #[arg(long)]
@@ -255,7 +267,7 @@ fn run() -> Result<u8> {
         }
         Command::Inspect(args) | Command::Explain(args) => analyze(args, None, false, false),
         Command::Verify(args) => verify(args),
-        Command::Test(args) => test(args),
+        Command::Test(args) => test(*args),
         Command::Sign(args) => {
             sign(args)?;
             Ok(0)
@@ -413,10 +425,18 @@ fn verify(args: VerifyArgs) -> Result<u8> {
 fn test(args: TestArgs) -> Result<u8> {
     let mut config = Config::load(args.config.as_deref())?;
     if !args.accepted_status.is_empty() {
-        config.expect.accepted_statuses = args.accepted_status.clone();
+        config.expect.authenticated_statuses = args.accepted_status.clone();
     }
     if !args.rejected_status.is_empty() {
-        config.expect.rejected_statuses = args.rejected_status.clone();
+        config.expect.unauthenticated_statuses = args.rejected_status.clone();
+    }
+    if args.allow_status_authentication {
+        config.expect.allow_status_authentication = true;
+    }
+    if let Some(header) = &args.auth_header {
+        config.expect.header = Some(header.clone());
+        config.expect.authenticated_value = args.authenticated_value.clone();
+        config.expect.unauthenticated_value = args.unauthenticated_value.clone();
     }
     config.validate()?;
     let source_url = Url::parse(&args.source)
@@ -580,7 +600,7 @@ fn prepared_live_cases(
             cases.push(live::PreparedCase {
                 name: name.into(),
                 expected_crypto: expected_crypto.into(),
-                expected_server: live::Outcome::Rejected,
+                expected_authentication: live::AuthenticationOutcome::Unauthenticated,
                 request,
             });
         }
@@ -612,7 +632,7 @@ fn prepared_live_cases(
         cases.push(live::PreparedCase {
             name: "unknown_key".into(),
             expected_crypto: "unverified_key".into(),
-            expected_server: live::Outcome::Rejected,
+            expected_authentication: live::AuthenticationOutcome::Unauthenticated,
             request,
         });
     }

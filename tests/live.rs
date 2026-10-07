@@ -33,14 +33,10 @@ fn url_mode_sends_original_and_controlled_mutations() {
             let (mut stream, _) = listener.accept().unwrap();
             let request = read_head(&mut stream);
             assert!(request.to_ascii_lowercase().contains("signature:"));
-            let status = if index == 0 {
-                "200 OK"
-            } else {
-                "401 Unauthorized"
-            };
+            let authenticated = index == 0;
             write!(
                 stream,
-                "HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                "HTTP/1.1 200 OK\r\nX-Agent-Authenticated: {authenticated}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
             )
             .unwrap();
         }
@@ -63,10 +59,12 @@ fn url_mode_sends_original_and_controlled_mutations() {
         .args([
             "--allow-private-target",
             "--allow-http",
-            "--accepted-status",
-            "200",
-            "--rejected-status",
-            "401",
+            "--auth-header",
+            "X-Agent-Authenticated",
+            "--authenticated-value",
+            "true",
+            "--unauthenticated-value",
+            "false",
             "--format",
             "json",
         ])
@@ -104,7 +102,14 @@ fn private_target_is_blocked_without_explicit_override() {
         .arg(keys.join("public.jwk"))
         .arg("--jwks")
         .arg(keys.join("directory.json"))
-        .args(["--accepted-status", "200", "--rejected-status", "401"])
+        .args([
+            "--auth-header",
+            "X-Agent-Authenticated",
+            "--authenticated-value",
+            "true",
+            "--unauthenticated-value",
+            "false",
+        ])
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(4));
@@ -211,12 +216,15 @@ fn built_in_demo_verifier_passes_the_strict_live_matrix() {
     let temp = tempfile::tempdir().unwrap();
     let keys = temp.path().join("keys");
     init_keys(&keys);
+    let config = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/live-test.toml");
     let probe = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = probe.local_addr().unwrap().port();
     drop(probe);
     let mut server = botgate()
         .args(["demo", "serve", "--jwks"])
         .arg(keys.join("directory.json"))
+        .arg("--config")
+        .arg(&config)
         .args(["--port", &port.to_string(), "--max-requests", "13"])
         .spawn()
         .unwrap();
@@ -232,16 +240,9 @@ fn built_in_demo_verifier_passes_the_strict_live_matrix() {
         .arg(keys.join("public.jwk"))
         .arg("--jwks")
         .arg(keys.join("directory.json"))
-        .args([
-            "--allow-private-target",
-            "--allow-http",
-            "--accepted-status",
-            "200",
-            "--rejected-status",
-            "401",
-            "--format",
-            "json",
-        ])
+        .arg("--config")
+        .arg(&config)
+        .args(["--format", "json"])
         .output()
         .unwrap();
     if !output.status.success() {
@@ -304,9 +305,100 @@ fn built_in_demo_distinguishes_a_conformant_weak_boundary() {
             .find(|case| case["name"] == name)
             .unwrap();
         assert_eq!(case["expected_crypto"], "still_valid", "{name}");
-        assert_eq!(case["observed_server"], "accepted", "{name}");
+        assert_eq!(case["observed_authentication"], "authenticated", "{name}");
+        assert_eq!(case["observed_access"], "allowed", "{name}");
         assert_eq!(case["passed"], true, "{name}");
     }
+}
+
+#[test]
+fn valid_identity_can_be_authenticated_but_denied_access() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = thread::spawn(move || {
+        for index in 0..13 {
+            let (mut stream, _) = listener.accept().unwrap();
+            read_head(&mut stream);
+            let authenticated = matches!(index, 0..=3);
+            let access = if index == 2 { "denied" } else { "allowed" };
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nX-Agent-Authenticated: {authenticated}\r\nX-Agent-Access: {access}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            )
+            .unwrap();
+        }
+    });
+
+    let temp = tempfile::tempdir().unwrap();
+    let keys = temp.path().join("keys");
+    init_keys(&keys);
+    let config = temp.path().join("live.toml");
+    fs::write(
+        &config,
+        r#"[policy]
+require_authority = true
+require_method = false
+require_path = false
+query = "ignore"
+body = "ignore"
+max_age_seconds = 300
+max_lifetime_seconds = 300
+allowed_future_skew_seconds = 30
+require_nonce = false
+
+[target]
+allow_private = true
+allow_http = true
+
+[expect]
+header = "X-Agent-Authenticated"
+authenticated_value = "true"
+unauthenticated_value = "false"
+
+[expect.access]
+header = "X-Agent-Access"
+allowed_value = "allowed"
+denied_value = "denied"
+
+[expect.access.cases]
+changed_path = "denied"
+"#,
+    )
+    .unwrap();
+    let url = format!("http://{address}/protected?view=full");
+    let output = botgate()
+        .arg("test")
+        .arg(&url)
+        .args([
+            "--agent",
+            "https://agent.example",
+            "--components",
+            "@authority",
+        ])
+        .arg("--key")
+        .arg(keys.join("private.key"))
+        .arg("--jwk")
+        .arg(keys.join("public.jwk"))
+        .arg("--jwks")
+        .arg(keys.join("directory.json"))
+        .arg("--config")
+        .arg(&config)
+        .args(["--format", "json"])
+        .output()
+        .unwrap();
+    server.join().unwrap();
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let path = report["live"]["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|case| case["name"] == "changed_path")
+        .unwrap();
+    assert_eq!(path["expected_crypto"], "still_valid");
+    assert_eq!(path["observed_authentication"], "authenticated");
+    assert_eq!(path["observed_access"], "denied");
+    assert_eq!(path["passed"], true);
 }
 
 fn read_head(stream: &mut TcpStream) -> String {

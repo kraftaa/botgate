@@ -6,7 +6,8 @@ Botgate is pre-1.0. Only the latest released version receives security fixes.
 
 | Version | Supported |
 |---------|-----------|
-| 0.2.x   | Yes       |
+| 0.3.x   | Yes       |
+| 0.2.x   | No        |
 | 0.1.x   | No        |
 
 ## Reporting a vulnerability
@@ -29,7 +30,7 @@ Botgate has offline analysis and explicitly requested network modes. Its guarant
 - `inspect`, `sign`, and file-based `test` without `--live` make no network requests.
 - `verify --discover` fetches only the covered `Signature-Agent` key source.
 - `test URL` and file-based `test --live URL` send the original and reported mutations to the specified target.
-- Live testing does not treat an arbitrary HTTP status as authentication evidence. It requires an explicit status or header oracle.
+- Live testing requires an explicit authentication oracle. A dedicated header is the default; status-only authentication requires an explicit compatibility override. Application access uses a separate optional oracle.
 - Botgate does not follow redirects or use environment proxies. It validates and pins DNS resolution, limits response size and time, and blocks private, loopback, link-local, and special-use addresses unless the user provides an explicit local-test override.
 
 **What a result means**

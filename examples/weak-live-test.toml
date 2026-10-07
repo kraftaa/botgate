@@ -16,8 +16,31 @@ timeout_seconds = 10
 max_response_bytes = 1048576
 
 [expect]
-accepted_statuses = [200]
-rejected_statuses = [401]
+header = "X-Botgate-Authenticated"
+authenticated_value = "true"
+unauthenticated_value = "false"
+
+[expect.access]
+header = "X-Botgate-Access"
+allowed_value = "allowed"
+denied_value = "denied"
+
+[expect.access.cases]
+original = "allowed"
+changed_method = "allowed"
+changed_path = "allowed"
+changed_query = "allowed"
+changed_authority = "allowed"
+changed_signed_header = "allowed"
+changed_body = "allowed"
+corrupted_signature = "allowed"
+removed_signature_agent = "allowed"
+changed_signature_agent = "allowed"
+expired = "allowed"
+future_created = "allowed"
+long_expiration = "allowed"
+missing_expires = "allowed"
+unknown_key = "allowed"
 
 [tests]
 changed_method = true

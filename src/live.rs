@@ -3,7 +3,7 @@ use serde::Serialize;
 use url::Url;
 
 use crate::{
-    config::{Expect, Tests},
+    config::{AccessDecision, AccessExpect, Expect, Tests},
     http_message::Request,
     mutation,
     network::{self, NetworkPolicy},
@@ -20,18 +20,33 @@ pub struct LiveReport {
 pub struct LiveCase {
     pub name: String,
     pub expected_crypto: String,
-    pub expected_server: Outcome,
-    pub observed_server: Outcome,
+    pub expected_authentication: AuthenticationOutcome,
+    pub observed_authentication: AuthenticationOutcome,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expected_access: Option<AccessOutcome>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observed_access: Option<AccessOutcome>,
     pub status: u16,
+    pub authentication_passed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access_passed: Option<bool>,
     pub passed: bool,
     pub detail: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Outcome {
-    Accepted,
-    Rejected,
+pub enum AuthenticationOutcome {
+    Authenticated,
+    Unauthenticated,
+    Indeterminate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AccessOutcome {
+    Allowed,
+    Denied,
     Indeterminate,
 }
 
@@ -39,7 +54,7 @@ pub enum Outcome {
 pub struct PreparedCase {
     pub name: String,
     pub expected_crypto: String,
-    pub expected_server: Outcome,
+    pub expected_authentication: AuthenticationOutcome,
     pub request: Request,
 }
 
@@ -51,15 +66,28 @@ impl LiveReport {
     pub fn text(&self) -> String {
         let mut output = format!("Botgate live test\n\nTarget: {}\n\n", self.target);
         output.push_str(
-            "Case                     Crypto expected  Server expected  Observed       Result\n",
+            "Case                     Crypto expected  Authentication             Access                     HTTP  Result\n",
         );
         for case in &self.cases {
+            let authentication = format!(
+                "{} -> {}",
+                authentication_name(case.expected_authentication),
+                authentication_name(case.observed_authentication)
+            );
+            let access = match (case.expected_access, case.observed_access) {
+                (Some(expected), Some(observed)) => {
+                    format!("{} -> {}", access_name(expected), access_name(observed))
+                }
+                (None, Some(observed)) => format!("observed {}", access_name(observed)),
+                _ => "not configured".into(),
+            };
             output.push_str(&format!(
-                "{:<24} {:<16} {:<16} {:<14} {}\n",
+                "{:<24} {:<16} {:<26} {:<26} {:<5} {}\n",
                 case.name,
                 case.expected_crypto,
-                outcome_name(case.expected_server),
-                format!("{} ({})", outcome_name(case.observed_server), case.status),
+                authentication,
+                access,
+                case.status,
                 if case.passed { "PASS" } else { "FAIL" }
             ));
             if !case.detail.is_empty() {
@@ -95,7 +123,7 @@ pub fn run(
         &mut cases,
         "original",
         "valid",
-        Outcome::Accepted,
+        AuthenticationOutcome::Authenticated,
         request,
         target,
         expect,
@@ -124,9 +152,9 @@ pub fn run(
             target_for_request(&changed, target)?
         };
         let expected = if item.expected_crypto.ends_with("invalid") {
-            Outcome::Rejected
+            AuthenticationOutcome::Unauthenticated
         } else {
-            Outcome::Accepted
+            AuthenticationOutcome::Authenticated
         };
         send_case(
             &mut cases,
@@ -145,7 +173,7 @@ pub fn run(
             &mut cases,
             "removed_signature_agent",
             "invalid",
-            Outcome::Rejected,
+            AuthenticationOutcome::Unauthenticated,
             &changed,
             target,
             expect,
@@ -158,7 +186,7 @@ pub fn run(
             &mut cases,
             "changed_signature_agent",
             "invalid",
-            Outcome::Rejected,
+            AuthenticationOutcome::Unauthenticated,
             &changed,
             target,
             expect,
@@ -170,7 +198,7 @@ pub fn run(
             &mut cases,
             &case.name,
             &case.expected_crypto,
-            case.expected_server,
+            case.expected_authentication,
             &case.request,
             target,
             expect,
@@ -188,7 +216,7 @@ fn send_case(
     cases: &mut Vec<LiveCase>,
     name: &str,
     expected_crypto: &str,
-    expected_server: Outcome,
+    expected_authentication: AuthenticationOutcome,
     request: &Request,
     target: &Url,
     expect: &Expect,
@@ -196,14 +224,31 @@ fn send_case(
 ) -> Result<()> {
     let response = network::send_request(target, request, policy)
         .with_context(|| format!("live case {name}"))?;
-    let (observed, detail) = classify(&response, expect);
+    let (observed_authentication, mut detail) = classify_authentication(&response, expect);
+    let expected_access = expect.access.cases.get(name).copied().map(Into::into);
+    let observed_access = classify_access(&response, &expect.access);
+    let authentication_passed = observed_authentication == expected_authentication;
+    let access_passed = expected_access.map(|expected| observed_access == Some(expected));
+    if expect.header.is_none() && expect.allow_status_authentication {
+        let warning = "authentication was classified by an explicitly enabled HTTP-status contract";
+        if detail.is_empty() {
+            detail = warning.into();
+        } else {
+            detail.push_str("; ");
+            detail.push_str(warning);
+        }
+    }
     cases.push(LiveCase {
         name: name.into(),
         expected_crypto: expected_crypto.into(),
-        expected_server,
-        observed_server: observed,
+        expected_authentication,
+        observed_authentication,
+        expected_access,
+        observed_access,
         status: response.status,
-        passed: observed == expected_server,
+        authentication_passed,
+        access_passed,
+        passed: authentication_passed && access_passed.unwrap_or(true),
         detail,
     });
     Ok(())
@@ -211,53 +256,111 @@ fn send_case(
 
 fn validate_oracle(expect: &Expect) -> Result<()> {
     let status_oracle =
-        !expect.accepted_statuses.is_empty() && !expect.rejected_statuses.is_empty();
+        !expect.authenticated_statuses.is_empty() && !expect.unauthenticated_statuses.is_empty();
     let header_oracle = expect.header.is_some()
-        && expect.accepted_value.is_some()
-        && expect.rejected_value.is_some();
-    if !status_oracle && !header_oracle {
+        && expect.authenticated_value.is_some()
+        && expect.unauthenticated_value.is_some();
+    if !header_oracle && !(status_oracle && expect.allow_status_authentication) {
         bail!(
-            "live testing requires an explicit oracle: configure both accepted_statuses and rejected_statuses, or a header with accepted_value and rejected_value"
+            "live testing requires an authentication oracle header with authenticated_value and unauthenticated_value; status classification additionally requires allow_status_authentication = true"
         );
+    }
+    let access_configured = access_configured(&expect.access);
+    if !expect.access.cases.is_empty() && !access_configured {
+        bail!("access case expectations require a configured expect.access oracle");
     }
     Ok(())
 }
 
-fn classify(response: &network::HttpResponse, expect: &Expect) -> (Outcome, String) {
-    if let (Some(header), Some(accepted), Some(rejected)) = (
+fn classify_authentication(
+    response: &network::HttpResponse,
+    expect: &Expect,
+) -> (AuthenticationOutcome, String) {
+    if let (Some(header), Some(authenticated), Some(unauthenticated)) = (
         &expect.header,
-        &expect.accepted_value,
-        &expect.rejected_value,
+        &expect.authenticated_value,
+        &expect.unauthenticated_value,
     ) {
         let actual = response
             .headers
             .get(header)
             .and_then(|value| value.to_str().ok());
         return match actual {
-            Some(value) if value == accepted => (Outcome::Accepted, format!("{header}: {value}")),
-            Some(value) if value == rejected => (Outcome::Rejected, format!("{header}: {value}")),
+            Some(value) if value == authenticated => (
+                AuthenticationOutcome::Authenticated,
+                format!("{header}: {value}"),
+            ),
+            Some(value) if value == unauthenticated => (
+                AuthenticationOutcome::Unauthenticated,
+                format!("{header}: {value}"),
+            ),
             Some(value) => (
-                Outcome::Indeterminate,
+                AuthenticationOutcome::Indeterminate,
                 format!("{header}: {value} does not match either configured value"),
             ),
             None => (
-                Outcome::Indeterminate,
-                format!("response lacks oracle header {header}"),
+                AuthenticationOutcome::Indeterminate,
+                format!("response lacks authentication oracle header {header}"),
             ),
         };
     }
-    if expect.accepted_statuses.contains(&response.status) {
-        (Outcome::Accepted, String::new())
-    } else if expect.rejected_statuses.contains(&response.status) {
-        (Outcome::Rejected, String::new())
+    if expect.authenticated_statuses.contains(&response.status) {
+        (AuthenticationOutcome::Authenticated, String::new())
+    } else if expect.unauthenticated_statuses.contains(&response.status) {
+        (AuthenticationOutcome::Unauthenticated, String::new())
     } else {
         (
-            Outcome::Indeterminate,
+            AuthenticationOutcome::Indeterminate,
             format!(
-                "HTTP {} is not classified by the configured oracle",
+                "HTTP {} is not classified by the configured authentication contract",
                 response.status
             ),
         )
+    }
+}
+
+fn classify_access(
+    response: &network::HttpResponse,
+    access: &AccessExpect,
+) -> Option<AccessOutcome> {
+    if let (Some(header), Some(allowed), Some(denied)) =
+        (&access.header, &access.allowed_value, &access.denied_value)
+    {
+        return Some(
+            match response
+                .headers
+                .get(header)
+                .and_then(|value| value.to_str().ok())
+            {
+                Some(value) if value == allowed => AccessOutcome::Allowed,
+                Some(value) if value == denied => AccessOutcome::Denied,
+                _ => AccessOutcome::Indeterminate,
+            },
+        );
+    }
+    if !access.allowed_statuses.is_empty() && !access.denied_statuses.is_empty() {
+        return Some(if access.allowed_statuses.contains(&response.status) {
+            AccessOutcome::Allowed
+        } else if access.denied_statuses.contains(&response.status) {
+            AccessOutcome::Denied
+        } else {
+            AccessOutcome::Indeterminate
+        });
+    }
+    None
+}
+
+fn access_configured(access: &AccessExpect) -> bool {
+    (access.header.is_some() && access.allowed_value.is_some() && access.denied_value.is_some())
+        || (!access.allowed_statuses.is_empty() && !access.denied_statuses.is_empty())
+}
+
+impl From<AccessDecision> for AccessOutcome {
+    fn from(value: AccessDecision) -> Self {
+        match value {
+            AccessDecision::Allowed => Self::Allowed,
+            AccessDecision::Denied => Self::Denied,
+        }
     }
 }
 
@@ -290,10 +393,53 @@ fn target_for_request(request: &Request, base: &Url) -> Result<Url> {
         .context("resolving request target against live target")
 }
 
-fn outcome_name(outcome: Outcome) -> &'static str {
+fn authentication_name(outcome: AuthenticationOutcome) -> &'static str {
     match outcome {
-        Outcome::Accepted => "accepted",
-        Outcome::Rejected => "rejected",
-        Outcome::Indeterminate => "indeterminate",
+        AuthenticationOutcome::Authenticated => "authenticated",
+        AuthenticationOutcome::Unauthenticated => "unauthenticated",
+        AuthenticationOutcome::Indeterminate => "indeterminate",
+    }
+}
+
+fn access_name(outcome: AccessOutcome) -> &'static str {
+    match outcome {
+        AccessOutcome::Allowed => "allowed",
+        AccessOutcome::Denied => "denied",
+        AccessOutcome::Indeterminate => "indeterminate",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn status_authentication_requires_an_explicit_override() {
+        let mut expect = Expect {
+            authenticated_statuses: vec![200],
+            unauthenticated_statuses: vec![401],
+            ..Expect::default()
+        };
+        assert!(validate_oracle(&expect).is_err());
+        expect.allow_status_authentication = true;
+        assert!(validate_oracle(&expect).is_ok());
+    }
+
+    #[test]
+    fn access_expectations_require_an_access_oracle() {
+        let mut cases = BTreeMap::new();
+        cases.insert("changed_path".into(), AccessDecision::Denied);
+        let expect = Expect {
+            header: Some("X-Agent-Authenticated".into()),
+            authenticated_value: Some("true".into()),
+            unauthenticated_value: Some("false".into()),
+            access: AccessExpect {
+                cases,
+                ..AccessExpect::default()
+            },
+            ..Expect::default()
+        };
+        assert!(validate_oracle(&expect).is_err());
     }
 }

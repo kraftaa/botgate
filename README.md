@@ -8,9 +8,9 @@ It answers five separate questions:
 2. Does the signature verify with a supplied or safely discovered key?
 3. Which request properties are cryptographically bound?
 4. Does that coverage satisfy the application's declared policy?
-5. Does an authorized server enforce the same boundary under controlled mutations?
+5. Does an authorized server authenticate the identity, and does the application independently allow access?
 
-Botgate deliberately does **not** infer authentication from an HTTP status code. Live tests require the user to define an acceptance/rejection oracle using classified statuses or a dedicated response header.
+Botgate deliberately does **not** infer authentication from an HTTP status code. Live tests require a dedicated authentication signal, normally a response header. Explicit status contracts remain available only through the `allow_status_authentication` compatibility override. Application access is measured by a separate, optional oracle.
 
 ## Status
 
@@ -27,7 +27,7 @@ The current implementation includes:
 - `Content-Digest` SHA-256 validation;
 - JSON output for CI;
 - an offline mutation matrix;
-- controlled live-server testing with an explicit authentication oracle;
+- controlled live-server testing with independent authentication and access oracles;
 - expired, future-created, long/missing-expiry, unknown-key, method, path, query, authority, covered-header, identity-header, and corrupted-signature cases;
 - SSRF-resistant `Signature-Agent` discovery for directory, `jwks_uri`, and CIMD forms;
 - a local well-known key-directory server;
@@ -152,17 +152,18 @@ botgate test 'http://127.0.0.1:8080/orders/123?view=summary' \
   --config examples/live-test.toml
 ```
 
-The explicit local-network and HTTP permissions are in `examples/live-test.toml`. Against the strict verifier, the original request must be accepted and invalid mutations must be rejected. The live report compares locally predicted cryptographic behavior with the configured server oracle; an unclassified response is `indeterminate`, not success.
+The explicit local-network and HTTP permissions are in `examples/live-test.toml`. Against the strict verifier, the original request must authenticate and invalid mutations must not authenticate. The demo returns HTTP 200 for both outcomes: its `X-Botgate-Authenticated` header is the authentication evidence, while `X-Botgate-Access` independently reports application access. An absent or unrecognized oracle value is `indeterminate`, not success.
 
-The original weak-versus-strict demonstration is also included. Start the demo with `examples/weak-policy.toml`, then test with `--components @authority --config examples/weak-live-test.toml`. Method, path, and query mutations remain cryptographically valid and the weak verifier accepts them; Botgate reports that as conformant behavior matching the deliberately weak policy, not as a vulnerability.
+The original weak-versus-strict demonstration is also included. Start the demo with `examples/weak-policy.toml`, then test with `--components @authority --config examples/weak-live-test.toml`. Method, path, and query mutations remain cryptographically valid and continue to authenticate; Botgate reports that as conformant behavior matching the deliberately weak signature policy, not as a vulnerability.
 
 To test a real authorized HTTPS endpoint, private-network and HTTP overrides are unnecessary:
 
 ```sh
 botgate test 'https://staging.example.com/protected' \
   --agent https://keys.agent.example \
-  --accepted-status 200 \
-  --rejected-status 401,403
+  --auth-header X-Agent-Authenticated \
+  --authenticated-value true \
+  --unauthenticated-value false
 ```
 
 Botgate generates only `GET` and `HEAD` mutations by default. Replaying another method requires `--allow-unsafe-methods`.
@@ -232,13 +233,21 @@ allow_private = false
 allow_http = false
 
 [expect]
-accepted_statuses = [200]
-rejected_statuses = [401, 403]
+header = "X-Agent-Authenticated"
+authenticated_value = "true"
+unauthenticated_value = "false"
 
-# A header oracle is stronger when the endpoint can provide one:
-# header = "X-Bot-Authenticated"
-# accepted_value = "true"
-# rejected_value = "false"
+# Access is a separate application decision. Omit this table when the
+# endpoint exposes authentication but not a reliable access signal.
+[expect.access]
+header = "X-Access-Granted"
+allowed_value = "true"
+denied_value = "false"
+
+# Only listed cases are asserted. Other cases still report observed access.
+[expect.access.cases]
+original = "allowed"
+changed_path = "denied"
 
 [tests]
 changed_method = true
@@ -257,6 +266,8 @@ missing_expires = true
 unknown_key = true
 ```
 
+`[policy]` describes the cryptographic boundary the application requires from a signature. `[expect.access.cases]` separately describes application access behavior expected from the live endpoint. This permits a result such as “signature valid, identity authenticated, access denied” without treating the denial as an authentication failure.
+
 Coverage is semantic rather than a flat string check. For example, `@target-uri` satisfies authority, path, and query coverage, while `@path` does not cover the query. Body integrity requires a covered `Content-Digest` (the whole field, or its `sha-256` member via `;key="sha-256"`) whose SHA-256 value matches the body bytes. Covering only another member, such as `sha-512`, does not count.
 Individual `@query-param` components are reported as partial evidence and do not satisfy a policy requiring the entire query to be bound. `@request-target` covers path and query for the raw HTTP/1.1 requests Botgate accepts.
 
@@ -269,6 +280,8 @@ botgate inspect request.http --format json
 ```
 
 Exit status is `0` when no error-level findings exist, `1` when conformance, compatibility, crypto, or policy findings fail, and `4` for input or configuration errors detected after argument parsing. Clap uses its conventional status `2` for command-line usage errors. JSON retains independent finding categories and cryptographic/identity states so CI does not need to infer meaning from prose.
+
+Live JSON keeps `expected_crypto`, `expected_authentication`, `observed_authentication`, `expected_access`, and `observed_access` separate. A request can remain cryptographically valid and authenticated while application access is denied; Botgate does not collapse those facts into a generic “accepted” result.
 
 ## Trust model
 

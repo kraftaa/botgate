@@ -28,12 +28,12 @@ pub fn serve(
     let keys = crypto::read_jwks(jwks_path)?;
     let listener = TcpListener::bind(bind).with_context(|| format!("binding {bind}"))?;
     println!("Botgate demo verifier listening on http://{bind}");
-    println!("It returns X-Botgate-Authenticated: true only after crypto and policy checks pass.");
+    println!("It reports authentication and application access in separate response headers.");
     for (handled, connection) in listener.incoming().enumerate() {
         match connection {
             Ok(mut stream) => {
                 if let Err(error) = handle(&mut stream, &keys, policy) {
-                    let _ = respond(&mut stream, 400, false, &format!("{error:#}"));
+                    let _ = respond(&mut stream, 400, false, false, &format!("{error:#}"));
                 }
             }
             Err(error) => eprintln!("botgate demo: accepting connection: {error}"),
@@ -65,13 +65,10 @@ fn handle(stream: &mut TcpStream, keys: &Jwks, policy: &Policy) -> Result<()> {
         Some(&context),
         false,
     );
-    let accepted = !report.has_errors();
-    respond(
-        stream,
-        if accepted { 200 } else { 401 },
-        accepted,
-        &report.text(),
-    )
+    let authenticated = !report.has_errors();
+    // Authentication and application access are intentionally independent:
+    // this demo endpoint is public, so a request may be unauthenticated yet allowed.
+    respond(stream, 200, authenticated, true, &report.text())
 }
 
 fn read_request(stream: &mut TcpStream) -> Result<Vec<u8>> {
@@ -121,7 +118,13 @@ fn read_request(stream: &mut TcpStream) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn respond(stream: &mut TcpStream, status: u16, accepted: bool, body: &str) -> Result<()> {
+fn respond(
+    stream: &mut TcpStream,
+    status: u16,
+    authenticated: bool,
+    access_allowed: bool,
+    body: &str,
+) -> Result<()> {
     let reason = match status {
         200 => "OK",
         401 => "Unauthorized",
@@ -129,7 +132,8 @@ fn respond(stream: &mut TcpStream, status: u16, accepted: bool, body: &str) -> R
     };
     write!(
         stream,
-        "HTTP/1.1 {status} {reason}\r\nX-Botgate-Authenticated: {accepted}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status} {reason}\r\nX-Botgate-Authenticated: {authenticated}\r\nX-Botgate-Access: {}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        if access_allowed { "allowed" } else { "denied" },
         body.len()
     )?;
     stream.write_all(body.as_bytes())?;
