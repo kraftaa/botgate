@@ -97,10 +97,19 @@ fn client_for(target: &Url, policy: &NetworkPolicy) -> Result<Client> {
     let port = target
         .port_or_known_default()
         .ok_or_else(|| anyhow!("URL has no known port"))?;
-    let addresses: Vec<SocketAddr> = (host, port)
-        .to_socket_addrs()
-        .with_context(|| format!("resolving {host}"))?
-        .collect();
+    // IP literals are used as-is; `host_str()` would keep IPv6 brackets, which the resolver rejects.
+    let domain = match target.host() {
+        Some(url::Host::Domain(domain)) => Some(domain),
+        _ => None,
+    };
+    let addresses: Vec<SocketAddr> = match target.host() {
+        Some(url::Host::Ipv4(ip)) => vec![SocketAddr::new(ip.into(), port)],
+        Some(url::Host::Ipv6(ip)) => vec![SocketAddr::new(ip.into(), port)],
+        _ => (host, port)
+            .to_socket_addrs()
+            .with_context(|| format!("resolving {host}"))?
+            .collect(),
+    };
     if addresses.is_empty() {
         bail!("{host} resolved to no addresses");
     }
@@ -117,8 +126,10 @@ fn client_for(target: &Url, policy: &NetworkPolicy) -> Result<Client> {
         .redirect(Policy::none())
         .no_proxy();
     // Pin the validated resolution so a second lookup cannot redirect the connection.
-    for address in addresses {
-        builder = builder.resolve(host, address);
+    if let Some(domain) = domain {
+        for address in addresses {
+            builder = builder.resolve(domain, address);
+        }
     }
     builder.build().context("building HTTP client")
 }
@@ -166,12 +177,32 @@ fn public_v6(ip: Ipv6Addr) -> bool {
         return public_v4(v4);
     }
     let segments = ip.segments();
+    let embedded = |high: u16, low: u16| Ipv4Addr::from((u32::from(high) << 16) | u32::from(low));
+    // NAT64 (64:ff9b::/96) and 6to4 (2002::/16) reach the IPv4 address they embed.
+    if segments[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
+        return public_v4(embedded(segments[6], segments[7]));
+    }
+    if segments[0] == 0x2002 {
+        return public_v4(embedded(segments[1], segments[2]));
+    }
     !(ip.is_loopback()
         || ip.is_unspecified()
         || ip.is_multicast()
+        // Deprecated IPv4-compatible ::a.b.c.d.
+        || segments[..6] == [0; 6]
+        // NAT64 local-use prefix 64:ff9b:1::/48.
+        || segments[..3] == [0x64, 0xff9b, 1]
+        // Teredo 2001::/32 tunnels to an arbitrary IPv4 address.
+        || segments[..2] == [0x2001, 0]
+        // Benchmarking 2001:2::/48.
+        || segments[..3] == [0x2001, 2, 0]
+        // Discard-only 100::/64.
+        || segments[..4] == [0x100, 0, 0, 0]
         || (segments[0] & 0xfe00) == 0xfc00
         || (segments[0] & 0xffc0) == 0xfe80
-        || (segments[0] == 0x2001 && segments[1] == 0x0db8))
+        // Deprecated site-local fec0::/10.
+        || (segments[0] & 0xffc0) == 0xfec0
+        || segments[..2] == [0x2001, 0x0db8])
 }
 
 #[cfg(test)]
@@ -190,10 +221,24 @@ mod tests {
             "fc00::1",
             "fe80::1",
             "2001:db8::1",
+            "::ffff:127.0.0.1",
+            "::127.0.0.1",
+            "64:ff9b::7f00:1",
+            "64:ff9b::a9fe:a9fe",
+            "64:ff9b:1::1",
+            "2002:7f00:1::",
+            "2002:a00:1::1",
+            "2001:0:4136:e378:8000:63bf:3fff:fdd2",
+            "2001:2::1",
+            "100::1",
+            "fec0::1",
         ] {
             assert!(!is_public(value.parse().unwrap()), "{value}");
         }
         assert!(is_public("8.8.8.8".parse().unwrap()));
         assert!(is_public("2606:4700:4700::1111".parse().unwrap()));
+        // Embedded public IPv4 addresses stay reachable.
+        assert!(is_public("64:ff9b::808:808".parse().unwrap()));
+        assert!(is_public("2002:808:808::".parse().unwrap()));
     }
 }

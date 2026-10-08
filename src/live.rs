@@ -65,33 +65,63 @@ impl LiveReport {
 
     pub fn text(&self) -> String {
         let mut output = format!("Botgate live test\n\nTarget: {}\n\n", self.target);
-        output.push_str(
-            "Case                     Expected validity Authentication             Access                     HTTP  Result\n",
-        );
-        for case in &self.cases {
-            let authentication = format!(
-                "{} -> {}",
-                authentication_name(case.expected_authentication),
-                authentication_name(case.observed_authentication)
-            );
-            let access = match (case.expected_access, case.observed_access) {
-                (Some(expected), Some(observed)) => {
-                    format!("{} -> {}", access_name(expected), access_name(observed))
-                }
-                (None, Some(observed)) => format!("observed {}", access_name(observed)),
-                _ => "not configured".into(),
-            };
-            output.push_str(&format!(
-                "{:<24} {:<20} {:<26} {:<26} {:<5} {}\n",
-                case.name,
-                case.expected_crypto,
-                authentication,
-                access,
-                case.status,
-                if case.passed { "PASS" } else { "FAIL" }
-            ));
-            if !case.detail.is_empty() {
-                output.push_str(&format!("  {}\n", case.detail));
+        let header = [
+            "Case",
+            "Expected validity",
+            "Authentication",
+            "Access",
+            "HTTP",
+            "Result",
+        ]
+        .map(String::from);
+        let rows: Vec<([String; 6], &str)> = self
+            .cases
+            .iter()
+            .map(|case| {
+                let authentication = format!(
+                    "{} -> {}",
+                    authentication_name(case.expected_authentication),
+                    authentication_name(case.observed_authentication)
+                );
+                let access = match (case.expected_access, case.observed_access) {
+                    (Some(expected), Some(observed)) => {
+                        format!("{} -> {}", access_name(expected), access_name(observed))
+                    }
+                    (None, Some(observed)) => format!("observed {}", access_name(observed)),
+                    _ => "not configured".into(),
+                };
+                let result = if case.passed { "PASS" } else { "FAIL" };
+                let cells = [
+                    case.name.to_string(),
+                    case.expected_crypto.to_string(),
+                    authentication,
+                    access,
+                    case.status.to_string(),
+                    result.into(),
+                ];
+                (cells, case.detail.as_str())
+            })
+            .collect();
+        // Size each column to its widest cell so long labels never shift later columns.
+        let mut widths = header.clone().map(|cell| cell.len());
+        for (cells, _) in &rows {
+            for (width, cell) in widths.iter_mut().zip(cells) {
+                *width = (*width).max(cell.len());
+            }
+        }
+        let line = |cells: &[String; 6]| {
+            let padded: Vec<String> = cells
+                .iter()
+                .zip(widths)
+                .map(|(cell, width)| format!("{cell:<width$}"))
+                .collect();
+            format!("{}\n", padded.join("  ").trim_end())
+        };
+        output.push_str(&line(&header));
+        for (cells, detail) in &rows {
+            output.push_str(&line(cells));
+            if !detail.is_empty() {
+                output.push_str(&format!("  {detail}\n"));
             }
         }
         output

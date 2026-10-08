@@ -57,18 +57,7 @@ pub fn discover(
                 .context("constructing well-known directory URL")?;
             let response = network::get(&fetch, MEDIA_TYPE, policy)?;
             require_ok(&response, &fetch)?;
-            let content_type = response
-                .headers
-                .get("content-type")
-                .and_then(|value| value.to_str().ok())
-                .unwrap_or_default()
-                .split(';')
-                .next()
-                .unwrap_or_default()
-                .trim();
-            if !content_type.eq_ignore_ascii_case(MEDIA_TYPE) {
-                bail!("directory returned unsupported Content-Type {content_type:?}");
-            }
+            require_content_type(&response, &[MEDIA_TYPE])?;
             Ok(DiscoveryResult {
                 identity: fetch.to_string(),
                 jwks: validate_jwks(&response.body, false)?,
@@ -77,6 +66,7 @@ pub fn discover(
         Kind::JwksUri => {
             let response = network::get(&locator.url, "application/jwk-set+json", policy)?;
             require_ok(&response, &locator.url)?;
+            require_content_type(&response, JWKS_MEDIA_TYPES)?;
             Ok(DiscoveryResult {
                 identity: normalized_identifier(&locator.url),
                 jwks: validate_directory(&response.body)?,
@@ -85,6 +75,7 @@ pub fn discover(
         Kind::Cimd => {
             let response = network::get(&locator.url, "application/json", policy)?;
             require_ok(&response, &locator.url)?;
+            require_json_content_type(&response)?;
             let document: CimdDocument =
                 serde_json::from_slice(&response.body).context("parsing CIMD document")?;
             let jwks = match (document.jwks, document.jwks_uri) {
@@ -93,6 +84,7 @@ pub fn discover(
                     let uri = Url::parse(&uri).context("parsing CIMD jwks_uri")?;
                     let keys = network::get(&uri, "application/jwk-set+json", policy)?;
                     require_ok(&keys, &uri)?;
+                    require_content_type(&keys, JWKS_MEDIA_TYPES)?;
                     validate_jwks(&keys.body, false)?
                 }
                 (Some(_), Some(_)) => bail!("CIMD must not contain both jwks and jwks_uri"),
@@ -104,6 +96,49 @@ pub fn discover(
             })
         }
     }
+}
+
+/// JWK Set media type, plus the generic JSON type that key servers commonly use.
+const JWKS_MEDIA_TYPES: &[&str] = &["application/jwk-set+json", "application/json"];
+
+/// Rejects a discovery document unless its Content-Type is one of `allowed`, ignoring parameters.
+fn require_content_type(response: &network::HttpResponse, allowed: &[&str]) -> Result<()> {
+    let content_type = content_type(response);
+    if !allowed
+        .iter()
+        .any(|expected| content_type.eq_ignore_ascii_case(expected))
+    {
+        bail!("discovery source returned unsupported Content-Type {content_type:?}");
+    }
+    Ok(())
+}
+
+/// CIMD permits `application/json` and more specific `application/*+json` types.
+fn require_json_content_type(response: &network::HttpResponse) -> Result<()> {
+    let content_type = content_type(response);
+    let accepted = content_type
+        .split_once('/')
+        .is_some_and(|(top_level, subtype)| {
+            top_level.eq_ignore_ascii_case("application")
+                && (subtype.eq_ignore_ascii_case("json")
+                    || subtype.to_ascii_lowercase().ends_with("+json"))
+        });
+    if !accepted {
+        bail!("discovery source returned unsupported Content-Type {content_type:?}");
+    }
+    Ok(())
+}
+
+fn content_type(response: &network::HttpResponse) -> &str {
+    response
+        .headers
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
 }
 
 fn locator(request: &Request, input: &SignatureInput, allow_http: bool) -> Result<Locator> {
@@ -164,4 +199,68 @@ fn normalized_identifier(url: &Url) -> String {
     identifier.set_query(None);
     identifier.set_fragment(None);
     identifier.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
+
+    fn response(content_type: Option<&'static str>) -> network::HttpResponse {
+        let mut headers = HeaderMap::new();
+        if let Some(value) = content_type {
+            headers.insert(CONTENT_TYPE, HeaderValue::from_static(value));
+        }
+        network::HttpResponse {
+            status: 200,
+            headers,
+            body: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn key_sources_must_declare_a_json_content_type() {
+        for accepted in [
+            "application/jwk-set+json",
+            "application/json; charset=utf-8",
+            "Application/JSON",
+        ] {
+            assert!(
+                require_content_type(&response(Some(accepted)), JWKS_MEDIA_TYPES).is_ok(),
+                "{accepted}"
+            );
+        }
+        for rejected in [Some("text/html"), Some("text/plain"), None] {
+            assert!(
+                require_content_type(&response(rejected), JWKS_MEDIA_TYPES).is_err(),
+                "{rejected:?}"
+            );
+        }
+        assert!(require_content_type(&response(Some("application/json")), &[MEDIA_TYPE]).is_err());
+    }
+
+    #[test]
+    fn cimd_accepts_application_json_media_types() {
+        for accepted in [
+            "application/json",
+            "application/client-metadata+json; charset=utf-8",
+            "Application/Vnd.Example+JSON",
+        ] {
+            assert!(
+                require_json_content_type(&response(Some(accepted))).is_ok(),
+                "{accepted}"
+            );
+        }
+        for rejected in [
+            Some("text/json"),
+            Some("text/example+json"),
+            Some("application/json-seq"),
+            None,
+        ] {
+            assert!(
+                require_json_content_type(&response(rejected)).is_err(),
+                "{rejected:?}"
+            );
+        }
+    }
 }

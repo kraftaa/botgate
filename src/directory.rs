@@ -1,13 +1,15 @@
 use anyhow::{Context, Result, bail};
 use std::{
     fs,
-    io::{Read, Write},
+    io::Write,
     net::{IpAddr, SocketAddr, TcpListener, TcpStream},
     path::Path,
-    time::Duration,
 };
 
-use crate::crypto::{self, Jwks};
+use crate::{
+    crypto::{self, Jwks},
+    server::{self, RequestReader},
+};
 
 pub const WELL_KNOWN_PATH: &str = "/.well-known/http-message-signatures-directory";
 pub const MEDIA_TYPE: &str = "application/http-message-signatures-directory+json";
@@ -26,19 +28,11 @@ pub fn serve(path: &Path, bind: SocketAddr, allow_non_loopback: bool, once: bool
     println!(
         "This built-in server is for local testing; conformant public discovery requires HTTPS."
     );
-    for connection in listener.incoming() {
-        match connection {
-            Ok(mut stream) => {
-                if let Err(error) = handle(&mut stream, &bytes) {
-                    eprintln!("botgate directory: {error:#}");
-                }
-            }
-            Err(error) => eprintln!("botgate directory: accepting connection: {error}"),
+    server::serve(listener, once.then_some(1), |mut stream| {
+        if let Err(error) = handle(&mut stream, &bytes) {
+            eprintln!("botgate directory: {error:#}");
         }
-        if once {
-            break;
-        }
-    }
+    });
     Ok(())
 }
 
@@ -71,10 +65,9 @@ pub fn validate_jwks(bytes: &[u8], enforce_thumbprint_kid: bool) -> Result<Jwks>
 }
 
 fn handle(stream: &mut TcpStream, directory: &[u8]) -> Result<()> {
-    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    let reader = RequestReader::new(stream)?;
     let mut request = [0_u8; 16 * 1024];
-    let size = stream.read(&mut request).context("reading request")?;
+    let size = reader.read(stream, &mut request)?;
     if size == request.len() {
         return respond(
             stream,

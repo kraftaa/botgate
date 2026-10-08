@@ -8,6 +8,7 @@ pub mod live;
 pub mod mutation;
 pub mod network;
 pub mod report;
+mod server;
 pub mod signature;
 
 pub const PROTOCOL: &str = "draft-ietf-webbotauth-httpsig-protocol-00";

@@ -25,6 +25,10 @@ header = "X-Botgate-Access"
 allowed_value = "allowed"
 denied_value = "denied"
 
+# Expected application-access results per case. These match `botgate demo serve`, whose
+# endpoint is deliberately public, so every case is "allowed" — even a corrupted signature.
+# For a real server, set each case to what that endpoint should do; copied unchanged, these
+# expectations cannot detect missing access control.
 [expect.access.cases]
 original = "allowed"
 changed_method = "allowed"

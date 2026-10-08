@@ -1,9 +1,8 @@
 use anyhow::{Context, Result, anyhow, bail};
 use std::{
-    io::{Read, Write},
+    io::Write,
     net::{SocketAddr, TcpListener, TcpStream},
     path::Path,
-    time::Duration,
 };
 use url::Url;
 
@@ -12,6 +11,7 @@ use crate::{
     crypto::{self, Jwks},
     http_message::Request,
     report::{Profile, Report},
+    server::{self, RequestReader},
     signature,
 };
 
@@ -46,19 +46,11 @@ pub fn serve_listener(
     max_requests: Option<usize>,
     access_mode: AccessMode,
 ) -> Result<()> {
-    for (handled, connection) in listener.incoming().enumerate() {
-        match connection {
-            Ok(mut stream) => {
-                if let Err(error) = handle(&mut stream, keys, policy, access_mode) {
-                    let _ = respond(&mut stream, 400, false, false, &format!("{error:#}"));
-                }
-            }
-            Err(error) => eprintln!("botgate demo: accepting connection: {error}"),
+    server::serve(listener, max_requests, |mut stream| {
+        if let Err(error) = handle(&mut stream, keys, policy, access_mode) {
+            let _ = respond(&mut stream, 400, false, false, &format!("{error:#}"));
         }
-        if max_requests.is_some_and(|limit| handled + 1 >= limit) {
-            break;
-        }
-    }
+    });
     Ok(())
 }
 
@@ -68,8 +60,6 @@ fn handle(
     policy: &Policy,
     access_mode: AccessMode,
 ) -> Result<()> {
-    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
     let bytes = read_request(stream)?;
     let request = Request::parse(&bytes)?;
     let parsed = signature::parse(&request)?;
@@ -106,10 +96,11 @@ fn handle(
 fn read_request(stream: &mut TcpStream) -> Result<Vec<u8>> {
     const MAX_HEADERS: usize = 64 * 1024;
     const MAX_BODY: usize = 1024 * 1024;
+    let reader = RequestReader::new(stream)?;
     let mut bytes = Vec::new();
     let mut buffer = [0_u8; 4096];
     let header_end = loop {
-        let size = stream.read(&mut buffer).context("reading request")?;
+        let size = reader.read(stream, &mut buffer)?;
         if size == 0 {
             bail!("connection closed before request headers completed");
         }
@@ -138,8 +129,8 @@ fn read_request(stream: &mut TcpStream) -> Result<Vec<u8>> {
     while bytes.len() < total {
         let remaining = total - bytes.len();
         let capacity = remaining.min(buffer.len());
-        let size = stream
-            .read(&mut buffer[..capacity])
+        let size = reader
+            .read(stream, &mut buffer[..capacity])
             .context("reading request body")?;
         if size == 0 {
             bail!("connection closed before request body completed");

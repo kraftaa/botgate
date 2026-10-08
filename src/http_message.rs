@@ -162,44 +162,51 @@ impl Request {
             .ok_or_else(|| anyhow!("cannot derive @scheme without an absolute target or --context"))
     }
 
-    pub fn path(&self) -> Result<String> {
-        if let Ok(url) = Url::parse(&self.target) {
-            return Ok(if url.path().is_empty() {
-                "/"
-            } else {
-                url.path()
-            }
-            .to_string());
+    /// The literal path-and-query of the request target, exactly as sent.
+    ///
+    /// Absolute-form targets are not run through URL normalization: removing `.`/`..`
+    /// segments would let a signature over `/admin` validate `/public/../admin`.
+    fn path_and_query(&self) -> Result<&str> {
+        if Url::parse(&self.target).is_ok() {
+            let rest = self
+                .target
+                .split_once("://")
+                .map(|(_, rest)| rest)
+                .ok_or_else(|| anyhow!("unsupported request-target form: {}", self.target))?;
+            let start = rest.find(['/', '?']).unwrap_or(rest.len());
+            return Ok(&rest[start..]);
         }
-        let path = self
-            .target
-            .split_once('?')
-            .map_or(self.target.as_str(), |(p, _)| p);
-        if !path.starts_with('/') {
+        if !self.target.starts_with('/') {
             bail!("unsupported request-target form: {}", self.target);
         }
-        Ok(path.to_string())
+        Ok(&self.target)
+    }
+
+    pub fn path(&self) -> Result<String> {
+        let path_and_query = self.path_and_query()?;
+        let path = path_and_query
+            .split_once('?')
+            .map_or(path_and_query, |(path, _)| path);
+        Ok(if path.is_empty() { "/" } else { path }.to_string())
     }
 
     pub fn query(&self) -> Result<String> {
-        if let Ok(url) = Url::parse(&self.target) {
-            return Ok(url
-                .query()
-                .map_or_else(|| "?".to_string(), |q| format!("?{q}")));
-        }
         Ok(self
-            .target
+            .path_and_query()?
             .split_once('?')
             .map_or_else(|| "?".to_string(), |(_, q)| format!("?{q}")))
     }
 
     pub fn target_uri(&self, context: Option<&Url>) -> Result<String> {
-        if let Ok(url) = Url::parse(&self.target) {
-            return Ok(url.to_string());
-        }
         let scheme = self.scheme(context)?;
         let authority = self.authority(context)?;
-        Ok(format!("{scheme}://{authority}{}", self.target))
+        let path_and_query = self.path_and_query()?;
+        let separator = if path_and_query.starts_with('/') {
+            ""
+        } else {
+            "/"
+        };
+        Ok(format!("{scheme}://{authority}{separator}{path_and_query}"))
     }
 
     pub fn serialize(&self) -> Vec<u8> {
@@ -291,5 +298,32 @@ mod tests {
         assert!(Request::parse(b"GE(T / HTTP/1.1\r\nHost: example.test\r\n\r\n").is_err());
         assert!(Request::parse(b"GET /#fragment HTTP/1.1\r\nHost: example.test\r\n\r\n").is_err());
         assert!(Request::parse(b"GET / HTTP/1.1\r\nX-Test: bad\0value\r\n\r\n").is_err());
+    }
+
+    #[test]
+    fn absolute_form_targets_are_not_normalized() {
+        let request = Request::parse(
+            b"GET https://Example.test/public/../admin?x=1 HTTP/1.1\r\nHost: example.test\r\n\r\n",
+        )
+        .unwrap();
+        assert_eq!(request.path().unwrap(), "/public/../admin");
+        assert_eq!(request.query().unwrap(), "?x=1");
+        assert_eq!(
+            request.target_uri(None).unwrap(),
+            "https://example.test/public/../admin?x=1"
+        );
+
+        let bare = Request::parse(b"GET https://example.test HTTP/1.1\r\n\r\n").unwrap();
+        assert_eq!(bare.path().unwrap(), "/");
+        assert_eq!(bare.query().unwrap(), "?");
+        assert_eq!(bare.target_uri(None).unwrap(), "https://example.test/");
+
+        let query_only = Request::parse(b"GET https://example.test?a=b HTTP/1.1\r\n\r\n").unwrap();
+        assert_eq!(query_only.path().unwrap(), "/");
+        assert_eq!(query_only.query().unwrap(), "?a=b");
+        assert_eq!(
+            query_only.target_uri(None).unwrap(),
+            "https://example.test/?a=b"
+        );
     }
 }
