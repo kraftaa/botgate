@@ -1,7 +1,16 @@
 # Botgate
 
-Botgate shows what a Web Bot Auth signature actually protects—and tests whether
-your server enforces the boundary you intended.
+Botgate is a security testing tool for websites that accept cryptographically
+signed requests from AI agents and bots.
+
+It checks whether the signature is valid, shows exactly which parts of the
+request are protected, and tests whether the server rejects requests when the
+signature is changed, expired, missing, or fake.
+
+Use Botgate when building or reviewing a Web Bot Auth integration. It catches
+configurations that appear to authenticate bots but still accept tampered
+requests. Botgate is a test tool; it does not sit in front of your website or
+block bots itself.
 
 If a signed request for `/orders/123` is changed to `/orders/999`, is the bot
 still authenticated? See the difference in two self-contained commands:
