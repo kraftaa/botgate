@@ -703,6 +703,11 @@ fn test(args: TestArgs) -> Result<u8> {
             .context("live testing requires a matching Signature member")?;
         crypto::verify(&request, input, signature, &keys, context.as_ref())
             .context("refusing live testing because the original signature is not locally valid")?;
+        if report.has_errors() {
+            bail!(
+                "refusing live testing because the original request fails configured conformance or policy checks; fix the baseline before testing mutations"
+            );
+        }
         let network = NetworkPolicy {
             allow_private: args.allow_private_target || config.target.allow_private,
             allow_http: args.allow_http || config.target.allow_http,
@@ -711,7 +716,7 @@ fn test(args: TestArgs) -> Result<u8> {
         };
         let prepared =
             if let (Some(url), Some(agent)) = (source_url.as_ref(), args.agent.as_deref()) {
-                prepared_live_cases(&request, url, agent, &args, &config.tests)?
+                prepared_live_cases(&request, url, agent, &args, &config.tests, &config.policy)?
             } else {
                 Vec::new()
             };
@@ -753,36 +758,12 @@ fn prepared_live_cases(
     agent: &str,
     args: &TestArgs,
     tests: &botgate::config::Tests,
+    policy: &botgate::config::Policy,
 ) -> Result<Vec<live::PreparedCase>> {
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64;
     let mut cases = Vec::new();
-    for (enabled, name, timestamps, expected_crypto) in [
-        (
-            tests.expired,
-            "expired",
-            (now - 600, Some(now - 300)),
-            "freshness_invalid",
-        ),
-        (
-            tests.future_created,
-            "future_created",
-            (now + 300, Some(now + 600)),
-            "freshness_invalid",
-        ),
-        (
-            tests.long_expiration,
-            "long_expiration",
-            (now, Some(now + 25 * 60 * 60)),
-            "policy_invalid",
-        ),
-        (
-            tests.missing_expires,
-            "missing_expires",
-            (now, None),
-            "conformance_invalid",
-        ),
-    ] {
-        if enabled {
+    for case in temporal_case_specs(now, tests, policy) {
+        if case.enabled {
             let mut request = original.clone();
             sign_request(
                 &mut request,
@@ -791,16 +772,16 @@ fn prepared_live_cases(
                 agent,
                 &args.components,
                 args.expires_in,
-                Some(timestamps),
+                Some((case.created, case.expires)),
                 &args.label,
                 args.legacy_agent,
                 args.allow_insecure_agent,
                 Some(target),
             )?;
             cases.push(live::PreparedCase {
-                name: name.into(),
-                expected_crypto: expected_crypto.into(),
-                expected_authentication: live::AuthenticationOutcome::Unauthenticated,
+                name: case.name.into(),
+                expected_crypto: case.expected_validity.into(),
+                expected_authentication: case.expected_authentication,
                 request,
             });
         }
@@ -837,6 +818,91 @@ fn prepared_live_cases(
         });
     }
     Ok(cases)
+}
+
+#[derive(Debug)]
+struct TemporalCaseSpec {
+    enabled: bool,
+    name: &'static str,
+    created: i64,
+    expires: Option<i64>,
+    expected_validity: &'static str,
+    expected_authentication: live::AuthenticationOutcome,
+}
+
+fn temporal_case_specs(
+    now: i64,
+    tests: &botgate::config::Tests,
+    policy: &botgate::config::Policy,
+) -> Vec<TemporalCaseSpec> {
+    const SF_INTEGER_MAX: i64 = 999_999_999_999_999;
+    let mut cases = vec![TemporalCaseSpec {
+        enabled: tests.expired,
+        name: "expired",
+        created: now.saturating_sub(600),
+        expires: Some(now.saturating_sub(300)),
+        expected_validity: "freshness_invalid",
+        expected_authentication: live::AuthenticationOutcome::Unauthenticated,
+    }];
+
+    let future_created = now
+        .checked_add(policy.allowed_future_skew_seconds)
+        // Leave enough margin that execution/network delay cannot move the case
+        // back inside the server's allowed skew window.
+        .and_then(|value| value.checked_add(300));
+    if let Some((created, expires)) = future_created
+        .filter(|value| *value <= SF_INTEGER_MAX)
+        .and_then(|created| {
+            created
+                .checked_add(300)
+                .filter(|value| *value <= SF_INTEGER_MAX)
+                .map(|expires| (created, expires))
+        })
+    {
+        cases.push(TemporalCaseSpec {
+            enabled: tests.future_created,
+            name: "future_created",
+            created,
+            expires: Some(expires),
+            expected_validity: "freshness_invalid",
+            expected_authentication: live::AuthenticationOutcome::Unauthenticated,
+        });
+    }
+
+    match policy.max_lifetime_seconds {
+        Some(maximum) => {
+            let expires = now
+                .checked_add(maximum)
+                .and_then(|value| value.checked_add(1));
+            if let Some(expires) = expires.filter(|value| *value <= SF_INTEGER_MAX) {
+                cases.push(TemporalCaseSpec {
+                    enabled: tests.long_expiration,
+                    name: "long_expiration",
+                    created: now,
+                    expires: Some(expires),
+                    expected_validity: "policy_invalid",
+                    expected_authentication: live::AuthenticationOutcome::Unauthenticated,
+                });
+            }
+        }
+        None => cases.push(TemporalCaseSpec {
+            enabled: tests.long_expiration,
+            name: "long_expiration",
+            created: now,
+            expires: now.checked_add(25 * 60 * 60),
+            expected_validity: "valid_recommendation_warning",
+            expected_authentication: live::AuthenticationOutcome::Authenticated,
+        }),
+    }
+    cases.push(TemporalCaseSpec {
+        enabled: tests.missing_expires,
+        name: "missing_expires",
+        created: now,
+        expires: None,
+        expected_validity: "conformance_invalid",
+        expected_authentication: live::AuthenticationOutcome::Unauthenticated,
+    });
+    cases
 }
 
 fn emit(report: &Report, format: Format) -> Result<()> {
@@ -1060,6 +1126,43 @@ fn write_file(path: &Path, bytes: &[u8], overwrite: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn temporal_cases_follow_the_configured_policy() {
+        let tests = botgate::config::Tests::default();
+        let mut policy = botgate::config::Policy {
+            allowed_future_skew_seconds: 600,
+            max_lifetime_seconds: Some(3_600),
+            ..botgate::config::Policy::default()
+        };
+        let cases = temporal_case_specs(10_000, &tests, &policy);
+        let future = cases
+            .iter()
+            .find(|case| case.name == "future_created")
+            .unwrap();
+        assert_eq!(future.created, 10_900);
+        let long = cases
+            .iter()
+            .find(|case| case.name == "long_expiration")
+            .unwrap();
+        assert_eq!(long.expires, Some(13_601));
+        assert_eq!(
+            long.expected_authentication,
+            live::AuthenticationOutcome::Unauthenticated
+        );
+
+        policy.max_lifetime_seconds = None;
+        let cases = temporal_case_specs(10_000, &tests, &policy);
+        let long = cases
+            .iter()
+            .find(|case| case.name == "long_expiration")
+            .unwrap();
+        assert_eq!(long.expected_validity, "valid_recommendation_warning");
+        assert_eq!(
+            long.expected_authentication,
+            live::AuthenticationOutcome::Authenticated
+        );
+    }
 
     #[cfg(unix)]
     #[test]

@@ -12,3 +12,4 @@ mod server;
 pub mod signature;
 
 pub const PROTOCOL: &str = "draft-ietf-webbotauth-httpsig-protocol-00";
+pub const JSON_SCHEMA_VERSION: u32 = 1;

@@ -13,7 +13,7 @@ Botgate is pre-1.0. Only the latest released version receives security fixes.
 
 ## Reporting a vulnerability
 
-Report vulnerabilities privately to the repository owner, [@kraftaa](https://github.com/kraftaa). Do not describe a suspected vulnerability in an issue, pull request, or any other shared channel. Include:
+Report vulnerabilities through [GitHub's private vulnerability reporting form](https://github.com/kraftaa/botgate/security/advisories/new). If that form is unavailable, contact the repository owner, [@kraftaa](https://github.com/kraftaa), privately. Do not describe a suspected vulnerability in an issue, pull request, or any other shared channel. Include:
 
 - the Botgate version (`botgate --version`) and platform;
 - the command line you ran;

@@ -65,20 +65,32 @@ pub fn validate_jwks(bytes: &[u8], enforce_thumbprint_kid: bool) -> Result<Jwks>
 }
 
 fn handle(stream: &mut TcpStream, directory: &[u8]) -> Result<()> {
+    const MAX_HEADERS: usize = 16 * 1024;
     let reader = RequestReader::new(stream)?;
-    let mut request = [0_u8; 16 * 1024];
-    let size = reader.read(stream, &mut request)?;
-    if size == request.len() {
-        return respond(
-            stream,
-            431,
-            "Request Header Fields Too Large",
-            "text/plain",
-            b"",
-            true,
-        );
+    let mut request = Vec::new();
+    let mut buffer = [0_u8; 2048];
+    loop {
+        if request.windows(4).any(|window| window == b"\r\n\r\n") {
+            break;
+        }
+        if request.len() >= MAX_HEADERS {
+            return respond(
+                stream,
+                431,
+                "Request Header Fields Too Large",
+                "text/plain",
+                b"",
+                true,
+            );
+        }
+        let capacity = (MAX_HEADERS - request.len()).min(buffer.len());
+        let size = reader.read(stream, &mut buffer[..capacity])?;
+        if size == 0 {
+            bail!("connection closed before request headers completed");
+        }
+        request.extend_from_slice(&buffer[..size]);
     }
-    let head = std::str::from_utf8(&request[..size]).context("request headers are not UTF-8")?;
+    let head = std::str::from_utf8(&request).context("request headers are not UTF-8")?;
     let line = head
         .lines()
         .next()
@@ -129,5 +141,12 @@ mod tests {
     fn rejects_non_thumbprint_kid() {
         let bytes = br#"{"keys":[{"kty":"OKP","crv":"Ed25519","x":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","kid":"wrong"}]}"#;
         assert!(validate_directory(bytes).is_err());
+        assert!(validate_jwks(bytes, false).is_ok());
+    }
+
+    #[test]
+    fn accepts_supported_key_from_a_mixed_shared_jwks() {
+        let bytes = br#"{"keys":[{"kty":"RSA","n":"unused","e":"AQAB","kid":"operator-label"},{"kty":"OKP","crv":"Ed25519","x":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}]}"#;
+        assert_eq!(validate_jwks(bytes, false).unwrap().keys.len(), 1);
     }
 }

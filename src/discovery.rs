@@ -60,7 +60,7 @@ pub fn discover(
             require_content_type(&response, &[MEDIA_TYPE])?;
             Ok(DiscoveryResult {
                 identity: fetch.to_string(),
-                jwks: validate_jwks(&response.body, false)?,
+                jwks: validate_directory(&response.body)?,
             })
         }
         Kind::JwksUri => {
@@ -69,7 +69,9 @@ pub fn discover(
             require_content_type(&response, JWKS_MEDIA_TYPES)?;
             Ok(DiscoveryResult {
                 identity: normalized_identifier(&locator.url),
-                jwks: validate_directory(&response.body)?,
+                // Direct/shared JWKS documents may use operator-assigned `kid` values.
+                // Web Bot Auth selects by the JWK thumbprint carried in `keyid`.
+                jwks: validate_jwks(&response.body, false)?,
             })
         }
         Kind::Cimd => {

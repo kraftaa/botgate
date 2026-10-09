@@ -1,6 +1,6 @@
 [package]
 name = "botgate"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2024"
 description = "Test what Web Bot Auth signatures protect and whether servers enforce the intended policy"
 license = "MIT"

@@ -3,6 +3,7 @@ use serde::Serialize;
 use url::Url;
 
 use crate::{
+    JSON_SCHEMA_VERSION,
     config::{AccessDecision, AccessExpect, Expect, Tests},
     http_message::Request,
     mutation,
@@ -12,6 +13,7 @@ use crate::{
 
 #[derive(Debug, Serialize)]
 pub struct LiveReport {
+    pub schema_version: u32,
     pub target: String,
     pub cases: Vec<LiveCase>,
 }
@@ -236,6 +238,7 @@ pub fn run(
         )?;
     }
     Ok(LiveReport {
+        schema_version: JSON_SCHEMA_VERSION,
         target: target.to_string(),
         cases,
     })

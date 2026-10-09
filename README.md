@@ -207,6 +207,12 @@ The matrix is generated independently for every signature in the request.
 
 ## Custom live end-to-end test
 
+Live mode is for an endpoint you own or are explicitly authorized to test. The
+target must implement Web Bot Auth and expose a reliable authentication result,
+normally through a dedicated response header. Botgate cannot determine whether
+an arbitrary public website authenticated a bot merely from its HTTP status or
+page contents.
+
 For custom policies and requests, start the low-level local verifier in one terminal:
 
 ```sh
@@ -240,6 +246,12 @@ botgate test 'https://staging.example.com/protected' \
 Botgate generates only `GET` and `HEAD` mutations by default. Replaying another method requires `--allow-unsafe-methods`.
 
 ## Key discovery and directory serving
+
+The two sides have different jobs: the agent signs with `private.key`, while the
+server needs the corresponding public key. For local tests, pass
+`directory.json` directly with `--jwks`. For real discovery, the agent controls
+the `Signature-Agent` URL and publishes its public key there; the target server
+fetches that public material over HTTPS. Never publish `private.key`.
 
 Verify a saved request using the key source covered by `Signature-Agent`:
 
@@ -353,6 +365,10 @@ Use `--format json` with `inspect`, `verify`, or `test`.
 ```sh
 botgate inspect request.http --format json
 ```
+
+Machine-readable reports include `schema_version`. Consumers should reject a
+schema version they do not understand rather than assuming later output has the
+same shape.
 
 Exit status is `0` when no error-level findings exist, `1` when conformance, compatibility, crypto, or policy findings fail, and `4` for input or configuration errors detected after argument parsing. Clap uses its conventional status `2` for command-line usage errors. JSON retains independent finding categories and cryptographic/identity states so CI does not need to infer meaning from prose.
 

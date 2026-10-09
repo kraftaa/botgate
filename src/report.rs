@@ -1,5 +1,5 @@
 use crate::{
-    PROTOCOL,
+    JSON_SCHEMA_VERSION, PROTOCOL,
     config::{Policy, Requirement},
     crypto::{self, Jwks},
     http_message::Request,
@@ -47,6 +47,7 @@ impl Profile {
 
 #[derive(Debug, Serialize)]
 pub struct Report {
+    pub schema_version: u32,
     pub protocol: String,
     pub profile_snapshot: String,
     pub profile_source: String,
@@ -90,7 +91,7 @@ pub struct Coverage {
     pub body_digest_valid: Option<bool>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Status {
     Valid,
@@ -242,6 +243,7 @@ impl Report {
             vec![]
         };
         Self {
+            schema_version: JSON_SCHEMA_VERSION,
             protocol: profile.name().into(),
             profile_snapshot: profile.snapshot().into(),
             profile_source: profile.source().into(),
@@ -444,16 +446,16 @@ fn profile_findings(
             ));
         }
     }
-    if input
-        .param("alg")
-        .and_then(Value::as_str)
-        .is_some_and(|alg| alg != "ed25519")
-    {
-        findings.push(error(
-            "BG-C112",
-            "conformance",
-            "Botgate currently verifies only alg=ed25519",
-        ));
+    if let Some(alg) = input.param("alg").and_then(Value::as_str) {
+        if alg != "ed25519" {
+            findings.push(warning(
+                "BG-U100",
+                "capability",
+                format!(
+                    "algorithm {alg} may be conformant, but Botgate currently verifies only Ed25519"
+                ),
+            ));
+        }
     }
     if input.param("tag").and_then(Value::as_str) != Some("web-bot-auth") {
         findings.push(error("BG-C104", "conformance", "tag must be web-bot-auth"));
@@ -931,5 +933,40 @@ mod tests {
         assert!(coverage.authority);
         assert!(!coverage.path);
         assert!(!coverage.query);
+    }
+
+    #[test]
+    fn unsupported_algorithm_is_a_capability_warning_not_a_conformance_error() {
+        let raw = concat!(
+            "GET / HTTP/1.1\r\nHost: example.test\r\n",
+            "Signature-Agent: sig1=\"https://agent.example\"\r\n",
+            "Signature-Input: sig1=(\"@authority\" \"signature-agent\";key=\"sig1\");created=1;expires=999999999999999;keyid=\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\";alg=\"rsa-pss-sha512\";tag=\"web-bot-auth\"\r\n",
+            "Signature: sig1=:AA==:\r\n\r\n"
+        );
+        let request = Request::parse(raw.as_bytes()).unwrap();
+        let parsed = signature::parse(&request).unwrap();
+        let report = Report::analyze(
+            &request,
+            &parsed,
+            &relaxed_policy(),
+            Profile::IetfDraft00,
+            None,
+            false,
+            None,
+            false,
+        );
+        let finding = report
+            .findings
+            .iter()
+            .find(|finding| finding.id == "BG-U100")
+            .unwrap();
+        assert_eq!(finding.category, "capability");
+        assert_eq!(finding.level, Level::Warning);
+        assert!(
+            !report
+                .findings
+                .iter()
+                .any(|finding| finding.id == "BG-C112")
+        );
     }
 }

@@ -11,7 +11,7 @@ use ring::{
     rand::SystemRandom,
     signature::{ED25519, Ed25519KeyPair, KeyPair, UnparsedPublicKey},
 };
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de};
 use sha2::{Digest, Sha256};
 use std::{fs, io::Write, path::Path};
 use url::Url;
@@ -31,9 +31,32 @@ pub struct Jwk {
     pub exp: Option<i64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Jwks {
     pub keys: Vec<Jwk>,
+}
+
+impl<'de> Deserialize<'de> for Jwks {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct RawJwks {
+            keys: Vec<serde_json::Value>,
+        }
+
+        let raw = RawJwks::deserialize(deserializer)?;
+        let mut keys = Vec::new();
+        for value in raw.keys {
+            let supported = value.get("kty").and_then(serde_json::Value::as_str) == Some("OKP")
+                && value.get("crv").and_then(serde_json::Value::as_str) == Some("Ed25519");
+            if supported {
+                keys.push(serde_json::from_value(value).map_err(de::Error::custom)?);
+            }
+        }
+        Ok(Self { keys })
+    }
 }
 
 pub fn generate(private_path: &Path) -> Result<Jwk> {
@@ -100,6 +123,12 @@ pub fn read_jwks(path: &Path) -> Result<Jwks> {
 pub fn thumbprint(jwk: &Jwk) -> Result<String> {
     if jwk.kty != "OKP" || jwk.crv != "Ed25519" {
         bail!("only Ed25519 OKP keys are supported");
+    }
+    let public = URL_SAFE_NO_PAD
+        .decode(&jwk.x)
+        .context("invalid base64url JWK x")?;
+    if public.len() != 32 {
+        bail!("Ed25519 JWK x must decode to 32 bytes");
     }
     Ok(thumbprint_parts(&jwk.x))
 }
@@ -285,5 +314,18 @@ mod tests {
             None,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn mixed_jwks_keeps_supported_ed25519_keys() {
+        let raw = r#"{
+            "keys": [
+                {"kty":"RSA","n":"unused","e":"AQAB","kid":"operator-label"},
+                {"kty":"OKP","crv":"Ed25519","x":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}
+            ]
+        }"#;
+        let keys: Jwks = serde_json::from_str(raw).unwrap();
+        assert_eq!(keys.keys.len(), 1);
+        assert_eq!(keys.keys[0].crv, "Ed25519");
     }
 }

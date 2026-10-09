@@ -118,6 +118,66 @@ fn private_target_is_blocked_without_explicit_override() {
 }
 
 #[test]
+fn live_testing_rejects_an_expired_original_before_connecting() {
+    let temp = tempfile::tempdir().unwrap();
+    let keys = temp.path().join("keys");
+    init_keys(&keys);
+    let request = temp.path().join("request.http");
+    fs::write(
+        &request,
+        b"GET /protected HTTP/1.1\r\nHost: 127.0.0.1:9\r\n\r\n",
+    )
+    .unwrap();
+    let signed = temp.path().join("signed.http");
+    let sign = botgate()
+        .arg("sign")
+        .arg(&request)
+        .arg("--key")
+        .arg(keys.join("private.key"))
+        .arg("--jwk")
+        .arg(keys.join("public.jwk"))
+        .args([
+            "--agent",
+            "https://agent.example",
+            "--context",
+            "http://127.0.0.1:9/protected",
+        ])
+        .args(["--expires-in", "1"])
+        .arg("--output")
+        .arg(&signed)
+        .output()
+        .unwrap();
+    assert!(sign.status.success(), "{sign:?}");
+    thread::sleep(Duration::from_secs(2));
+
+    let output = botgate()
+        .arg("test")
+        .arg(&signed)
+        .arg("--jwks")
+        .arg(keys.join("directory.json"))
+        .args([
+            "--live",
+            "http://127.0.0.1:9/protected",
+            "--allow-private-target",
+            "--allow-http",
+            "--auth-header",
+            "X-Agent-Authenticated",
+            "--authenticated-value",
+            "true",
+            "--unauthenticated-value",
+            "false",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(4), "{output:?}");
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        error.contains("fails configured conformance or policy"),
+        "{error}"
+    );
+}
+
+#[test]
 fn verify_can_discover_a_local_test_directory_with_explicit_overrides() {
     let temp = tempfile::tempdir().unwrap();
     let keys = temp.path().join("keys");
@@ -198,11 +258,14 @@ fn directory_serve_exposes_only_the_well_known_resource() {
             }
         })
         .expect("directory server did not start");
+    // TCP may split a request line or headers at any byte boundary.
+    stream.write_all(b"GET /.well-known/http-message-").unwrap();
+    thread::sleep(Duration::from_millis(10));
     stream
-        .write_all(
-            b"GET /.well-known/http-message-signatures-directory HTTP/1.1\r\nHost: localhost\r\n\r\n",
-        )
+        .write_all(b"signatures-directory HTTP/1.1\r\nHost: localhost\r\n")
         .unwrap();
+    thread::sleep(Duration::from_millis(10));
+    stream.write_all(b"\r\n").unwrap();
     let mut response = Vec::new();
     stream.read_to_end(&mut response).unwrap();
     assert!(child.wait().unwrap().success());

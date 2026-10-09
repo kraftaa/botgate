@@ -326,6 +326,7 @@ fn unsigned_request_json_reports_no_signatures() {
         .unwrap();
     assert_eq!(output.status.code(), Some(1));
     let report = json(&output);
+    assert_eq!(report["schema_version"], 1);
     assert_eq!(report["signatures"].as_array().unwrap().len(), 0);
     assert!(finding_ids(&report).contains(&"BG-C100"));
 }
