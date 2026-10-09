@@ -117,7 +117,7 @@ name = "botgate"
 version = "0.4.2"
 dependencies = [
  "anyhow",
- "base64 0.22.1",
+ "base64 0.23.1",
  "clap",
  "proptest",
  "reqwest",
