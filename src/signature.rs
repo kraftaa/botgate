@@ -104,6 +104,37 @@ impl SignatureInput {
                 && matches!(c.params.as_slice(), [(param, value)] if param == "key" && value.as_string() == Some(key))
         })
     }
+    /// The covered Signature-Agent dictionary member this signature's identity comes from.
+    ///
+    /// Prefers the member keyed to the signature label. Without one, a single covered member
+    /// is accepted (the draft's Appendix E vector keys it differently). Several covered
+    /// members with none keyed to the label are ambiguous and rejected. Discovery and
+    /// reporting both use this, so they can never resolve different identities.
+    pub fn signature_agent_key(&self) -> Result<Option<&str>> {
+        let keys: Vec<&str> = self
+            .components
+            .iter()
+            .filter(|component| component.name == "signature-agent")
+            .filter_map(|component| {
+                component
+                    .params
+                    .iter()
+                    .find(|(name, _)| name == "key")
+                    .and_then(|(_, value)| value.as_string())
+            })
+            .collect();
+        if keys.contains(&self.label.as_str()) {
+            return Ok(Some(&self.label));
+        }
+        match keys.as_slice() {
+            [] => Ok(None),
+            [only] => Ok(Some(only)),
+            _ => bail!(
+                "signature covers several Signature-Agent members and none is keyed to its label {}",
+                self.label
+            ),
+        }
+    }
     /// True when `name` is covered in any form, including with parameters.
     pub fn mentions(&self, name: &str) -> bool {
         self.components
@@ -591,7 +622,7 @@ impl<'a> Cursor<'a> {
             }
             let value = if self.s.as_bytes().get(self.pos) == Some(&b'=') {
                 self.pos += 1;
-                self.value()?
+                self.bare_item("parameter values")?
             } else {
                 Value::Boolean(true)
             };
@@ -732,6 +763,16 @@ impl<'a> Cursor<'a> {
         }
     }
 
+    /// A bare item: any value except an inner list, as required for parameter values and
+    /// inner-list members. Checking before descending keeps nesting depth at one, so
+    /// hostile input like `((((…` cannot recurse until the stack overflows.
+    fn bare_item(&mut self, context: &str) -> Result<Value> {
+        if self.s.as_bytes().get(self.pos) == Some(&b'(') {
+            bail!("nested inner lists are invalid in {context}");
+        }
+        self.value()
+    }
+
     fn inner_list(&mut self) -> Result<Value> {
         self.pos += 1;
         let mut items = Vec::new();
@@ -746,10 +787,7 @@ impl<'a> Cursor<'a> {
             if self.done() {
                 bail!("unterminated inner list");
             }
-            let value = self.value()?;
-            if matches!(value, Value::InnerList(_)) {
-                bail!("nested inner lists are invalid");
-            }
+            let value = self.bare_item("inner lists")?;
             let params = self.params()?;
             items.push(ParameterizedItem { value, params });
             match self.s.as_bytes().get(self.pos) {
@@ -921,5 +959,49 @@ mod tests {
         )
         .unwrap();
         assert!(parse(&request).is_err());
+    }
+
+    #[test]
+    fn signature_agent_member_is_chosen_unambiguously() {
+        let input =
+            |components: &str| parse_input("sig1", &format!("({components});created=1")).unwrap();
+        // The member keyed to the label wins, wherever it appears.
+        let preferred = input(r#""signature-agent";key="attacker" "signature-agent";key="sig1""#);
+        assert_eq!(preferred.signature_agent_key().unwrap(), Some("sig1"));
+        // A single covered member is used even when keyed differently (draft Appendix E).
+        let single = input(r#""@authority" "signature-agent";key="agent2""#);
+        assert_eq!(single.signature_agent_key().unwrap(), Some("agent2"));
+        // Several members, none keyed to the label: ambiguous.
+        let ambiguous = input(r#""signature-agent";key="a" "signature-agent";key="b""#);
+        assert!(ambiguous.signature_agent_key().is_err());
+        assert_eq!(
+            input(r#""@authority""#).signature_agent_key().unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn deeply_nested_parentheses_are_rejected_without_recursing() {
+        // A small stack makes any per-level recursion overflow long before 200,000 levels.
+        let worker = std::thread::Builder::new()
+            .stack_size(128 * 1024)
+            .spawn(|| {
+                let nested = format!("{}{}", "(".repeat(200_000), ")".repeat(200_000));
+                for header in [
+                    format!("sig1=(\"@authority\");x={nested}"),
+                    format!("sig1=(\"@authority\" \"x\";p={nested})"),
+                    format!("sig1=(\"@authority\");x=(1 {nested})"),
+                ] {
+                    let raw = format!(
+                        "GET / HTTP/1.1\r\nHost: a.test\r\nSignature-Input: {header}\r\n\r\n"
+                    );
+                    let request = Request::parse(raw.as_bytes()).unwrap();
+                    assert!(parse(&request).is_err());
+                }
+            })
+            .unwrap();
+        worker
+            .join()
+            .expect("parser recursed instead of rejecting nested inner lists");
     }
 }

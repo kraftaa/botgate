@@ -4,6 +4,7 @@ use anyhow::{Context, Result, bail};
 use std::{
     io::Read,
     net::{TcpListener, TcpStream},
+    panic::{self, AssertUnwindSafe},
     sync::atomic::{AtomicUsize, Ordering},
     thread,
     time::{Duration, Instant},
@@ -36,8 +37,12 @@ where
                     } else {
                         let (active, handler) = (&active, &handler);
                         scope.spawn(move || {
-                            handler(stream);
-                            active.fetch_sub(1, Ordering::SeqCst);
+                            // Released on drop, so a panicking handler still frees its slot.
+                            let _slot = Slot(active);
+                            let handled = panic::catch_unwind(AssertUnwindSafe(|| handler(stream)));
+                            if handled.is_err() {
+                                eprintln!("botgate: connection handler panicked");
+                            }
                         });
                     }
                 }
@@ -48,6 +53,15 @@ where
             }
         }
     });
+}
+
+/// One occupied connection slot; dropping it frees the slot.
+struct Slot<'a>(&'a AtomicUsize);
+
+impl Drop for Slot<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 /// Tracks the request deadline for one connection.
@@ -118,6 +132,32 @@ mod tests {
         );
 
         drop(idle);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn panicking_handlers_do_not_exhaust_connection_slots() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let panics = MAX_ACTIVE_CONNECTIONS + 1;
+        let seen = AtomicUsize::new(0);
+        let server = thread::spawn(move || {
+            serve(listener, Some(panics + 1), |mut stream| {
+                if seen.fetch_add(1, Ordering::SeqCst) < panics {
+                    panic!("simulated handler failure");
+                }
+                let _ = stream.write_all(b"ok");
+            });
+        });
+        for _ in 0..panics {
+            let mut client = TcpStream::connect(address).unwrap();
+            // Wait for the handler to finish (and drop the stream) before the next one.
+            let _ = client.read_to_end(&mut Vec::new());
+        }
+        let mut client = TcpStream::connect(address).unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        assert_eq!(response, "ok");
         server.join().unwrap();
     }
 }

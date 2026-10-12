@@ -22,3 +22,8 @@ hosting = "github"
 tap = "kraftaa/homebrew-tap"
 # Whether to install an updater program
 install-updater = false
+# Pull requests never run release builds; release.yml has no pull_request trigger.
+pr-run-mode = "skip"
+# Record GitHub build-provenance attestations for release artifacts
+# (mirrored by hand in the customized release.yml).
+github-attestations = true

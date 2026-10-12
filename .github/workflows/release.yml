@@ -38,8 +38,8 @@ permissions:
 #
 # If there's a prerelease-style suffix to the version, then the release(s)
 # will be marked as a prerelease.
+# Tag pushes only: pull requests (including from forks) never run release builds.
 on:
-  pull_request:
   push:
     tags:
       - '**[0-9]+.[0-9]+.[0-9]+*'
@@ -111,6 +111,11 @@ jobs:
       # - 1 "global" task that builds universal installers
       # - N "local" tasks that build each platform's binaries and platform-specific installers
       matrix: ${{ fromJson(needs.plan.outputs.val).ci.github.artifacts_matrix }}
+    # Attestations need an OIDC token and permission to record them; nothing else is writable.
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     runs-on: ${{ matrix.runner }}
     container: ${{ matrix.container && matrix.container.image || null }}
     env:
@@ -161,6 +166,10 @@ jobs:
           echo "EOF" >> "$GITHUB_OUTPUT"
 
           cp dist-manifest.json "$BUILD_MANIFEST_NAME"
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ steps.cargo-dist.outputs.paths }}
       - name: "Upload artifacts"
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
@@ -174,6 +183,11 @@ jobs:
     needs:
       - plan
       - build-local-artifacts
+    # Attestations need an OIDC token and permission to record them; nothing else is writable.
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     runs-on: "ubuntu-22.04"
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -208,6 +222,10 @@ jobs:
           echo "EOF" >> "$GITHUB_OUTPUT"
 
           cp dist-manifest.json "$BUILD_MANIFEST_NAME"
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ steps.cargo-dist.outputs.paths }}
       - name: "Upload artifacts"
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:

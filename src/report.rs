@@ -634,33 +634,7 @@ fn signature_agent(request: &Request, input: &SignatureInput) -> Result<Option<S
     if raw.trim_start().starts_with('"') {
         return Ok(Some(signature::parse_string_item(raw.trim())?));
     }
-    let member_key = input
-        .components
-        .iter()
-        .filter(|component| component.name == "signature-agent")
-        .filter_map(|component| {
-            component
-                .params
-                .iter()
-                .find(|(name, _)| name == "key")
-                .and_then(|(_, value)| value.as_string())
-        })
-        .find(|key| *key == input.label)
-        .or_else(|| {
-            input
-                .components
-                .iter()
-                .filter(|component| component.name == "signature-agent")
-                .filter_map(|component| {
-                    component
-                        .params
-                        .iter()
-                        .find(|(name, _)| name == "key")
-                        .and_then(|(_, value)| value.as_string())
-                })
-                .next()
-        });
-    match member_key {
+    match input.signature_agent_key()? {
         Some(key) => Ok(Some(signature::dictionary_string_member(&raw, key)?)),
         None => Ok(None),
     }

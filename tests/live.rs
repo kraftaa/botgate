@@ -541,3 +541,194 @@ fn read_head(stream: &mut TcpStream) -> String {
     }
     String::from_utf8(bytes).unwrap()
 }
+
+/// Serves one key directory response and reports whether it was contacted; gives up
+/// once `stop` is set (or after 10s).
+fn serve_directory_once(
+    listener: TcpListener,
+    directory: Vec<u8>,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> thread::JoinHandle<bool> {
+    listener.set_nonblocking(true).unwrap();
+    thread::spawn(move || {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    stream.set_nonblocking(false).unwrap();
+                    read_head(&mut stream);
+                    write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/http-message-signatures-directory+json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        directory.len()
+                    )
+                    .unwrap();
+                    stream.write_all(&directory).unwrap();
+                    return true;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if stop.load(std::sync::atomic::Ordering::SeqCst)
+                        || std::time::Instant::now() > deadline
+                    {
+                        return false;
+                    }
+                    thread::sleep(Duration::from_millis(20));
+                }
+                Err(error) => panic!("{error}"),
+            }
+        }
+    })
+}
+
+#[test]
+fn discovery_never_attributes_an_attacker_key_to_another_identity() {
+    use botgate::{crypto, http_message::Request, signature};
+
+    let temp = tempfile::tempdir().unwrap();
+    let victim_keys = temp.path().join("victim");
+    init_keys(&victim_keys);
+    let attacker_private = temp.path().join("attacker.key");
+    let attacker_jwk = crypto::generate(&attacker_private).unwrap();
+    let attacker_keyid = crypto::thumbprint(&attacker_jwk).unwrap();
+    let attacker_directory = serde_json::to_vec(&crypto::Jwks {
+        keys: vec![attacker_jwk],
+    })
+    .unwrap();
+
+    let victim_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let attacker_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let victim = format!("http://{}", victim_listener.local_addr().unwrap());
+    let attacker = format!("http://{}", attacker_listener.local_addr().unwrap());
+
+    // One signature covers two Signature-Agent members; the attacker's is listed first,
+    // the victim's is keyed to the signature label and is the identity that gets reported.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let raw = format!(
+        "GET / HTTP/1.1\r\nHost: example.test\r\nSignature-Agent: sig1=\"{victim}\", attacker=\"{attacker}\"\r\nSignature-Input: sig1=(\"@authority\" \"@method\" \"@path\" \"signature-agent\";key=\"attacker\" \"signature-agent\";key=\"sig1\");created={now};expires={};keyid=\"{attacker_keyid}\";tag=\"web-bot-auth\"\r\nSignature: sig1=:AA==:\r\n\r\n",
+        now + 300
+    );
+    let request = Request::parse(raw.as_bytes()).unwrap();
+    let parsed = signature::parse(&request).unwrap();
+    let bytes = crypto::sign(&request, &parsed.inputs[0], &attacker_private, None).unwrap();
+    let signed = temp.path().join("attack.http");
+    fs::write(
+        &signed,
+        raw.replace(
+            "Signature: sig1=:AA==:",
+            &format!("Signature: {}", crypto::signature_header("sig1", &bytes)),
+        ),
+    )
+    .unwrap();
+
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let victim_server = serve_directory_once(
+        victim_listener,
+        fs::read(victim_keys.join("directory.json")).unwrap(),
+        stop.clone(),
+    );
+    let attacker_server = serve_directory_once(attacker_listener, attacker_directory, stop.clone());
+    let output = botgate()
+        .arg("verify")
+        .arg(&signed)
+        .args([
+            "--discover",
+            "--allow-private-discovery",
+            "--allow-insecure-discovery",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+
+    assert!(
+        victim_server.join().unwrap(),
+        "the reported identity's directory was not fetched"
+    );
+    assert!(
+        !attacker_server.join().unwrap(),
+        "the attacker's key source was contacted"
+    );
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let signature = &report["signatures"][0];
+    assert_eq!(signature["signature_agent"], victim.as_str());
+    assert_eq!(signature["cryptographic_status"], "invalid");
+    assert_ne!(signature["identity_status"], "valid");
+}
+
+#[test]
+fn discovery_pins_every_resolved_address() {
+    use std::net::ToSocketAddrs;
+
+    // Needs a name with several addresses; `localhost` has two (::1, 127.0.0.1) on macOS
+    // and many Linux systems. With a single address there is nothing to distinguish.
+    let mut addresses: Vec<std::net::IpAddr> = ("localhost", 0)
+        .to_socket_addrs()
+        .unwrap()
+        .map(|address| address.ip())
+        .collect();
+    addresses.dedup();
+    if addresses.len() < 2 {
+        eprintln!("skipping: localhost resolves to a single address");
+        return;
+    }
+    // Serve only on the first address. Pinning just one address (the old bug kept the last)
+    // makes discovery fail; pinning all of them lets the connection reach this one.
+    let listener = TcpListener::bind((addresses[0], 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    let temp = tempfile::tempdir().unwrap();
+    let keys = temp.path().join("keys");
+    init_keys(&keys);
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let server = serve_directory_once(
+        listener,
+        fs::read(keys.join("directory.json")).unwrap(),
+        stop.clone(),
+    );
+
+    let unsigned = temp.path().join("request.http");
+    fs::write(&unsigned, b"GET / HTTP/1.1\r\nHost: example.test\r\n\r\n").unwrap();
+    let signed = temp.path().join("signed.http");
+    let sign = botgate()
+        .arg("sign")
+        .arg(&unsigned)
+        .arg("--key")
+        .arg(keys.join("private.key"))
+        .arg("--jwk")
+        .arg(keys.join("public.jwk"))
+        .args(["--agent", &format!("http://localhost:{port}")])
+        .arg("--allow-insecure-agent")
+        .arg("--output")
+        .arg(&signed)
+        .output()
+        .unwrap();
+    assert!(sign.status.success(), "{sign:?}");
+    let output = botgate()
+        .arg("verify")
+        .arg(&signed)
+        .args([
+            "--discover",
+            "--allow-private-discovery",
+            "--allow-insecure-discovery",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+
+    assert!(
+        server.join().unwrap(),
+        "discovery did not reach {}",
+        addresses[0]
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|_| {
+        panic!("{output:?}");
+    });
+    assert_eq!(report["signatures"][0]["identity_status"], "valid");
+}

@@ -39,14 +39,17 @@ reviewed formula in `kraftaa/homebrew-tap`.
 5. Create and push an annotated tag matching the package version, for example:
 
    ```sh
-   git tag -a v0.4.2 -m "Botgate v0.4.2"
-   git push origin v0.4.2
+   git tag -a v0.4.3 -m "Botgate v0.4.3"
+   git push origin v0.4.3
    ```
 
 6. Confirm both tag workflows succeed. The PyPI workflow must complete its
    verification job before it can build or publish wheels.
-7. Download the release workflow artifacts. Validate `sha256.sum`, run the
-   binary on at least one supported platform, and test the generated installer.
+7. Download the release workflow artifacts. Validate `sha256.sum`, check build
+   provenance with `gh attestation verify <artifact> --repo kraftaa/botgate`,
+   run the binary on at least one supported platform, and test the generated
+   installer. Attestations show which workflow run and commit produced an
+   artifact; they do not prove the build environment was uncompromised.
 8. Create the GitHub release from the audited artifacts and write release notes
    that summarize user-visible changes rather than only linking a commit diff.
 9. Run `brew style --fix` and `brew test` on the generated `botgate.rb`. Remove

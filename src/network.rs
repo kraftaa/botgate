@@ -126,10 +126,9 @@ fn client_for(target: &Url, policy: &NetworkPolicy) -> Result<Client> {
         .redirect(Policy::none())
         .no_proxy();
     // Pin the validated resolution so a second lookup cannot redirect the connection.
+    // `resolve` replaces the override on each call, so pin every validated address at once.
     if let Some(domain) = domain {
-        for address in addresses {
-            builder = builder.resolve(domain, address);
-        }
+        builder = builder.resolve_to_addrs(domain, &addresses);
     }
     builder.build().context("building HTTP client")
 }

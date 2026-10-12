@@ -153,17 +153,9 @@ fn locator(request: &Request, input: &SignatureInput, allow_http: bool) -> Resul
             kind: Kind::Directory,
         });
     }
+    // Same selection as the report, so the fetched key source is the identity that is shown.
     let key = input
-        .components
-        .iter()
-        .filter(|component| component.name == "signature-agent")
-        .find_map(|component| {
-            component
-                .params
-                .iter()
-                .find(|(name, _)| name == "key")
-                .and_then(|(_, value)| value.as_string())
-        })
+        .signature_agent_key()?
         .ok_or_else(|| anyhow!("signature does not cover a Signature-Agent dictionary member"))?;
     let (value, params) = signature::dictionary_string_member_with_params(&raw, key)?;
     let kind = match params.iter().find(|(name, _)| name == "type") {
